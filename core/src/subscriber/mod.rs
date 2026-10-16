@@ -366,6 +366,13 @@ impl SubscriberHandle {
     pub fn abort(self) {
         self.join.abort();
     }
+
+    /// Like [`abort`](Self::abort), and waits until the task is gone (its
+    /// transaction dropped).
+    pub async fn abort_and_wait(self) {
+        self.join.abort();
+        let _ = self.join.await;
+    }
 }
 
 fn store_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> SubscriberError {

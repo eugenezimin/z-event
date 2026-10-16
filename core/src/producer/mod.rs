@@ -266,6 +266,16 @@ impl ProducerHandle {
         }
     }
 
+    /// Like [`abort`](Self::abort), and waits until the tasks are gone.
+    pub async fn abort_and_wait(mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+        for task in self.tasks.drain(..) {
+            let _ = task.await;
+        }
+    }
+
     /// Whether this replica currently leads the sequencer.
     pub fn is_leader(&self) -> bool {
         *self.leader.borrow()
