@@ -16,6 +16,7 @@ pub mod error;
 pub mod feed;
 pub mod ports;
 pub mod producer;
+pub mod subscriber;
 pub mod telemetry;
 pub mod transport;
 pub mod types;
@@ -24,6 +25,10 @@ pub use error::{BoxError, FeedError, HandlerError, SubscriberError, TransportErr
 pub use feed::{FeedSource, FeedStream};
 pub use ports::*;
 pub use producer::{FeedConfig, Producer, ProducerConfig, ProducerHandle};
+pub use subscriber::{
+    Backoff, ReplayReport, RetryPolicy, StopReason, Subscriber, SubscriberBuilder,
+    SubscriberHandle, SubscriberStatus,
+};
 pub use transport::InProcess;
 pub use types::*;
 

@@ -6,7 +6,7 @@ use crate::types::{Epoch, PeerId, Seq};
 /// A boxed, thread-safe error.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-/// What a `Handler` returns when it cannot apply an event.
+/// What a [`Handler`](crate::Handler) returns when it cannot apply an event.
 #[derive(Debug, thiserror::Error)]
 pub enum HandlerError {
     /// Might succeed on retry (timeout, lock conflict, a dependency is down).
@@ -35,7 +35,7 @@ impl HandlerError {
     }
 }
 
-/// Why a producer's `FeedSource` refused or ended a
+/// Why a producer's [`FeedSource`](crate::FeedSource) refused or ended a
 /// stream.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -76,7 +76,7 @@ pub enum FeedError {
 }
 
 /// A client-side transport failure. The single error type of the
-/// `Transport` port, so the subscriber can tell errors
+/// [`Transport`](crate::Transport) port, so the subscriber can tell errors
 /// worth a reconnect from errors that must stop it.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -160,7 +160,7 @@ impl From<FeedError> for TransportError {
     }
 }
 
-/// Why a `Subscriber` stopped, or why one of its
+/// Why a [`Subscriber`](crate::Subscriber) stopped, or why one of its
 /// administrative calls failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
