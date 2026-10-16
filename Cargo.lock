@@ -573,6 +573,18 @@ dependencies = [
  "time",
  "tokio",
  "z-event",
+ "z-event-testkit",
+]
+
+[[package]]
+name = "z-event-testkit"
+version = "0.1.0"
+dependencies = [
+ "fastrand",
+ "futures",
+ "time",
+ "tokio",
+ "z-event",
 ]
 
 [[package]]

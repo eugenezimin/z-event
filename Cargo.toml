@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "adapters/memory"]
+members = ["core", "adapters/memory", "testkit"]
 
 [workspace.package]
 version = "0.1.0"
