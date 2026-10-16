@@ -2,7 +2,7 @@
 
 **Reliable, push-based events between services, without a message broker.** A Rust library.
 
-> Status: **design draft**, no code yet. Read [`DESIGN.md`](DESIGN.md) for the full design and [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for the build order.
+> Status: **0.1.0, unreleased.** The core, the in-memory adapter and the conformance testkit are implemented (milestones ZE1–ZE2). The Postgres and gRPC adapters are next (ZE3–ZE4). Read [`DESIGN.md`](DESIGN.md) for the full design and [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for the build order.
 
 ## What it does
 
@@ -25,8 +25,8 @@ At modest volume (up to hundreds of events per second per service), the database
 | Crate | Folder | What it is | Optional? |
 |---|---|---|---|
 | `z-event` | `core/` | Protocol, `Producer`, `Subscriber`, storage and transport **ports** (traits), in-process transport. No database or network dependencies | required |
-| `z-event-postgres` | `adapters/postgres/` | Storage adapter for PostgreSQL (sqlx): outbox, sequencer, LISTEN/NOTIFY, cursors, dead letters, embedded migrations | use it, or write your own (e.g. MongoDB) |
-| `z-event-grpc` | `adapters/grpc/` | Transport adapter for gRPC (tonic): a feed service you **mount on your own server**, a client on **your own channel**, or turnkey standalone helpers | use it, or write your own (e.g. HTTP/SSE) |
+| `z-event-postgres` | `adapters/postgres/` | Storage adapter for PostgreSQL (sqlx): outbox, sequencer, LISTEN/NOTIFY, cursors, dead letters, embedded migrations. **Planned (ZE3)** | use it, or write your own (e.g. MongoDB) |
+| `z-event-grpc` | `adapters/grpc/` | Transport adapter for gRPC (tonic): a feed service you **mount on your own server**, a client on **your own channel**, or turnkey standalone helpers. **Planned (ZE4)** | use it, or write your own (e.g. HTTP/SSE) |
 | `z-event-memory` | `adapters/memory/` | In-memory storage: the reference implementation, for tests and examples | dev/test |
 | `z-event-testkit` | `testkit/` | Conformance suites that every storage or transport adapter must pass | dev/test |
 
@@ -41,7 +41,7 @@ store.commit(tx).await?;
 
 // Producer: expose the feed on your existing tonic server
 Server::builder()
-    .add_service(z_event_grpc::feed_service(producer.feed_source(), MtlsIdentity::default()))
+    .add_service(z_event_grpc::feed_service(producer.feed_source(acl), MtlsIdentity::default()))
     .serve(addr).await?;
 
 // Consumer: handler runs in the same transaction as the cursor update
@@ -56,6 +56,19 @@ Subscriber::builder(store, z_event_grpc::Client::new(channel), CreateInvoice)
     .spawn();
 ```
 
+A complete, runnable version on the in-memory adapter is in [`examples/in-process`](examples/in-process/src/main.rs): `cargo run -p z-event-example-in-process`.
+
+## Development
+
+```sh
+cargo test --workspace --all-features      # unit tests, doctests, both conformance suites on the memory adapter
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+bash scripts/check-core-deps.sh            # the core must not depend on a database, gRPC or an adapter
+ZEVENT_TESTKIT_SCALE=10 cargo test --release -p z-event-memory --test conformance   # stress
+```
+
+`ZEVENT_TESTKIT_SEED` reproduces a randomised conformance run (the seed is printed on every run).
+
 ## Guarantees in one table
 
 | Scope | Guarantee |
@@ -64,3 +77,7 @@ Subscriber::builder(store, z_event_grpc::Client::new(channel), CreateInvoice)
 | Delivery | At-least-once on the wire, **exactly-once effect** for database effects (effect + cursor in one transaction) |
 | Order | Strict per aggregate; total per producer; none across producers |
 | Outages | Consumer down for any time within retention: no loss. Producer storage restored from backup: detected, never silent |
+
+## Licence
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT licence](LICENSE-MIT) at your option.

@@ -1,6 +1,6 @@
 # z-event: design
 
-> Status: **design draft**. No code exists yet. The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
+> Status: **ZE1 and ZE2 implemented**: the core (`z-event`), the in-memory adapter (`z-event-memory`) and the conformance testkit (`z-event-testkit`). The Postgres and gRPC adapters are planned (ZE3, ZE4). The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Port signatures in §13–§14 are final as of ZE1.
 >
 > z-event is a Rust library for **reliable, push-based, event-driven communication between services without a message broker**. A producer writes events into its own database in the same transaction as the business change (a *transactional outbox*). It then serves that outbox as an ordered feed, and consumers subscribe to it. Each consumer stores its position (cursor) in the same transaction as the effect of the event, so nothing is lost and nothing is applied twice.
 >
@@ -75,10 +75,11 @@ Option D is option C turned around: **the consumer owns its position (cursor), t
 ```
 z-event/
 ├── core/                   # crate `z-event`: the protocol, Producer, Subscriber, ports (traits), in-process transport
-│                           #   depends on: tokio, futures, serde, tracing, metrics, ulid, time. NO database, NO gRPC
+│                           #   depends on: tokio, tokio-util, futures, serde, serde_json, bytes, thiserror,
+│                           #   tracing, metrics, ulid, time, fastrand. NO database, NO gRPC
 ├── adapters/
-│   ├── postgres/           # crate `z-event-postgres`: storage ports on PostgreSQL (sqlx)
-│   ├── grpc/               # crate `z-event-grpc`: transport port on gRPC (tonic) + proto/zevent/v1/feed.proto
+│   ├── postgres/           # crate `z-event-postgres`: storage ports on PostgreSQL (sqlx)          [planned, ZE3]
+│   ├── grpc/               # crate `z-event-grpc`: transport port on gRPC (tonic) + feed.proto     [planned, ZE4]
 │   └── memory/             # crate `z-event-memory`: in-memory storage (reference implementation, tests, examples)
 ├── testkit/                # crate `z-event-testkit`: conformance suites for storage and transport adapters
 └── examples/               # toy orders → billing: in-process (memory) and split (postgres + grpc)
@@ -108,7 +109,8 @@ flowchart LR
 | `Store` + `CursorStore` | storage adapter, on the consumer side | cursors, parking (§13) |
 | `Transport` | transport adapter, client side | open a subscription to a producer (§14) |
 | (server side) | transport adapter, server side | exposes the core `FeedSource` over the network (§14) |
-| `Acl`, `PeerIdentity`, `Snapshotter` | the host (or adapter defaults) | who may read what; who is calling; current state for bootstrap (§11, §18) |
+| `Acl`, `Snapshotter` | the host (or the defaults `AllowAll`, `TypeAcl`) | who may read what; current state for bootstrap (§11, §18) |
+| `PeerIdentity` | each transport adapter (it depends on the request type) | who is calling; core only defines the resulting `PeerId` (§16, §18) |
 
 A service can be a producer, a consumer, or both. It may use different adapters on each side, but in practice one storage adapter per service is the norm.
 
@@ -128,6 +130,8 @@ A service can be a producer, a consumer, or both. It may use different adapters 
 | `occurred_at` | timestamp | When the business change happened |
 | `headers` | map<string,string> | **Host-defined metadata**, e.g. `tenant`, `actor`, `entity`. z-event never interprets it |
 | `payload` | bytes | Usually JSON of a typed event defined by the host. z-event never interprets it |
+
+In Rust the `type` field is `Event::event_type` (serialised as `type`), and `correlation_id` is an `Option<String>` (empty on the wire means none).
 
 z-event deliberately has **no event schema registry**. Hosts define their typed events (e.g. a shared `events` crate) and serialise them into `payload`.
 
@@ -185,10 +189,10 @@ A consumer opens one **bidirectional stream** per producer. The protocol is defi
 
 | Direction | Message | Meaning |
 |---|---|---|
-| consumer → producer | `Start{consumer, from_seq, epoch, types}` | "I have applied up to `from_seq` (exclusive) in `epoch`; send me these types" |
+| consumer → producer | `Start{consumer, from_seq, epoch, types}` | "I have applied up to `from_seq` (exclusive) in `epoch`; send me these types". `epoch` is empty on the first subscribe; empty `types` means every type the ACL lets this consumer read |
 | consumer → producer | `Ack{applied_seq}` | Sent every few seconds. Feeds lag metrics and retention; delivery is **never gated** on acks |
 | producer → consumer | `Event{…envelope…}` | One event, in `seq` order |
-| producer → consumer | `Checkpoint{seq, head, epoch}` | Heartbeat and "skip" marker: lets the cursor move past ranges of filtered-out types |
+| producer → consumer | `Checkpoint{seq, head, epoch}` | Heartbeat and "skip" marker. Promise: every matching event with `seq` ≤ `Checkpoint.seq` was sent before it, so the cursor may move to `seq`. A stream always **opens** with a checkpoint at `from_seq`; it tells a new consumer the feed's epoch |
 
 The producer's `FeedSource` streams the **backlog** (`seq > from_seq`, in batches, filtered by type) and then switches to **live push**. It waits on the storage adapter's `notifications()` and sends every new event the moment it is sequenced.
 
@@ -219,6 +223,7 @@ sequenceDiagram
     end
 ```
 
+- **Type filters and the ACL.** Explicitly requested types must all pass the ACL, or the stream is refused. Without explicit types, events the ACL denies are skipped silently (the checkpoints still move the cursor past them).
 - **No polling anywhere.** The producer wakes on notifications. The stream is long-lived, with `Checkpoint` heartbeats. A consumer only "pulls" once, on (re)connect, by stating its cursor.
 - **Backpressure.** The `FeedSource` reads the backlog in batches and yields to the transport's flow control (HTTP/2 for gRPC, bounded channels in-process). A slow consumer never affects the producer's request path.
 
@@ -230,20 +235,22 @@ The stream is **at-least-once**: after a reconnect, the producer resends everyth
 // core: the Subscriber's apply step (simplified)
 async fn apply(&self, ev: Event) -> Result<(), ApplyError> {
     let mut tx = self.store.begin().await?;
-    let cursor = self.store.lock_cursor(&mut tx, &self.producer).await?; // exclusive per (consumer, producer)
+    let cursor = self.store.lock_cursor(&mut tx, &self.key).await?;      // exclusive per (consumer, producer)
     if ev.seq <= cursor.seq {
         return Ok(()); // already applied before a reconnect: skip (tx dropped = rolled back)
     }
-    if self.store.is_parked(&mut tx, &self.producer, &ev.aggregate).await? {
-        self.store.park(&mut tx, &DeadLetter::behind(&ev)).await?;      // keep per-aggregate order (§10)
+    if self.store.is_parked(&mut tx, &self.key, &ev.aggregate).await? {
+        self.store.park(&mut tx, &DeadLetter::behind(&self.key, &ev)).await?; // keep per-aggregate order (§10)
     } else {
         self.handler.handle(&mut tx, &ev).await?;                       // business effect, same tx
     }
-    self.store.advance(&mut tx, &self.producer, cursor.next(ev.seq)).await?;
+    self.store.advance(&mut tx, &self.key, cursor.next(ev.seq)).await?;
     self.store.commit(tx).await?;                                       // effect + cursor atomically
     Ok(())
 }
 ```
+
+A handler error, or a failed commit, counts as one attempt; every retry runs in a fresh transaction (a failed SQL transaction cannot continue). If the cursor turns out to be *behind* the position the subscriber already committed (someone reset it), the subscriber reconnects from the stored cursor.
 
 | Consumer kind | Example | Guarantee | How |
 |---|---|---|---|
@@ -290,7 +297,10 @@ Parked events live in the **consumer's** storage, through `CursorStore`. Replay 
 
 ## 11. Retention, replay, snapshots and epochs
 
-- **Retention.** The producer's purge job deletes an outbox event when it is older than the retention period (default 90 days) **and** every registered consumer has acked past it.
+- **Retention.** The producer's purge job deletes an outbox event when it was **sequenced** longer ago than the retention period (default 90 days) **and** every registered consumer has acked past it.
+  - Purge removes a contiguous prefix of the feed and never the head event. The store remembers the boundary as `FeedHead.purged_through`.
+  - A consumer whose cursor is below `purged_through` is refused with `BeyondRetention` and stops, instead of silently skipping purged events. It must bootstrap from a snapshot.
+  - Only the replica that currently leads the sequencer purges.
   - Consumers register automatically on their first `Start`.
   - A consumer that stops acking blocks deletion and raises an alert, so nobody silently loses history.
   - Decommissioned consumers are removed explicitly (`z-event-cli consumers remove`).
@@ -300,7 +310,8 @@ Parked events live in the **consumer's** storage, through `CursorStore`. Replay 
   2. The consumer subscribes from `S`. Changes committed while the snapshot was taken may arrive again after `S`, which is harmless thanks to `aggregate_version`.
 - **Epochs.** Every feed has an `epoch` id, stored by the producer. A consumer's cursor records the epoch it belongs to. The producer refuses a `Start` whose epoch differs from its own, and the Subscriber stops with an alert. Epochs change:
   - **explicitly**, when an operator restores the producer's storage from a backup and runs `z-event-cli epoch rotate` (part of the restore runbook);
-  - **automatically**, when a consumer's `from_seq` is **ahead** of the producer's head: a sure sign the producer went back in time. The producer rotates the epoch and rejects the stream.
+  - **automatically**, when a consumer's `from_seq` is **ahead** of the producer's head **in the producer's current epoch**: a sure sign the producer went back in time. The producer rotates the epoch and rejects the stream. A consumer with no epoch yet that is ahead of the head is rejected without rotating (nothing proves the feed went back).
+  - A heartbeat re-reads the head, so a rotation also ends streams that are already open.
 
 ## 12. Ordering guarantees
 
@@ -312,54 +323,68 @@ Parked events live in the **consumer's** storage, through `CursorStore`. Replay 
 
 ## 13. Storage ports
 
-Signatures are a sketch and will be finalised in ZE1. Async fns in traits use native Rust support.
+Final as of ZE1. Every async method is declared as `fn …(…) -> impl Future<Output = …> + Send`, so the runtime can spawn the futures on a multi-threaded executor; implementors simply write `async fn` (no `async-trait`). The traits are therefore not dyn-compatible; the core is generic over them, and erases types internally where it must.
 
 ```rust
 /// The adapter's native transaction. The HOST also uses it for its own business writes,
 /// which is what makes "change + event" and "effect + cursor" atomic.
 pub trait Store: Send + Sync + 'static {
-    type Tx: Send;
+    type Tx: Send + 'static;                                          // drop = rollback
     type Error: std::error::Error + Send + Sync + 'static;
-    async fn begin(&self) -> Result<Self::Tx, Self::Error>;
-    async fn commit(&self, tx: Self::Tx) -> Result<(), Self::Error>; // drop = rollback
+    fn begin(&self) -> impl Future<Output = Result<Self::Tx, Self::Error>> + Send;
+    fn commit(&self, tx: Self::Tx) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn rollback(&self, tx: Self::Tx) -> impl Future<Output = Result<(), Self::Error>> + Send; // default: drop
 }
 
-/// Producer side.
+/// Producer side. Written with `async fn` for brevity; the trait declares `impl Future + Send`.
 pub trait OutboxStore: Store {
-    type Lease: Send;                                                // held by the sequencer leader
+    type Lease: Send + Sync + 'static;        // dropping it without release() = a crash
     async fn append(&self, tx: &mut Self::Tx, events: &[NewEvent]) -> Result<(), Self::Error>;
     async fn try_lead(&self) -> Result<Option<Self::Lease>, Self::Error>;
-    /// Stamps committed, unsequenced events (sequencing contract, §6). Returns the new head, if any.
+    async fn release(&self, lease: Self::Lease) -> Result<(), Self::Error>;
+    /// Stamps committed, unsequenced events (sequencing contract, §6). MUST fail if the lease
+    /// was lost (fencing) and MUST renew it. Returns the new head, if anything was stamped.
     async fn sequence_batch(&self, lease: &Self::Lease, limit: u32) -> Result<Option<Seq>, Self::Error>;
     async fn read(&self, after: Seq, types: &TypeFilter, limit: u32) -> Result<Vec<Event>, Self::Error>;
-    async fn head(&self) -> Result<FeedHead, Self::Error>;          // {seq, epoch}
+    async fn head(&self) -> Result<FeedHead, Self::Error>;            // {seq, epoch, purged_through}
     async fn rotate_epoch(&self) -> Result<Epoch, Self::Error>;
-    /// Wake-ups: `Appended` (wake the sequencer) and `Sequenced(head)` (wake FeedSources).
+    /// Hints: Appended (wake the sequencer), Sequenced(head) (wake feeds), Lagged (re-check).
     fn notifications(&self) -> BoxStream<'static, Notification>;
-    async fn ack(&self, consumer: &str, seq: Seq) -> Result<(), Self::Error>;
+    async fn unsequenced(&self) -> Result<u64, Self::Error>;          // stuck-sequencer signal
+    async fn register_consumer(&self, consumer: &str, at: Seq) -> Result<(), Self::Error>;
+    async fn ack(&self, consumer: &str, seq: Seq) -> Result<(), Self::Error>;   // monotonic
     async fn consumers(&self) -> Result<Vec<ConsumerState>, Self::Error>;
     async fn remove_consumer(&self, consumer: &str) -> Result<(), Self::Error>;
-    /// Deletes events older than `before` AND acked by every registered consumer.
+    /// Deletes the longest prefix sequenced before `before` AND acked by every registered
+    /// consumer, never the head event; updates purged_through. Returns the count.
     async fn purge(&self, before: OffsetDateTime) -> Result<u64, Self::Error>;
 }
 
-/// Consumer side.
+/// Consumer side. Cursors and dead letters are keyed by CursorKey { consumer, producer }:
+/// one service may run several consumers against one producer.
 pub trait CursorStore: Store {
-    async fn lock_cursor(&self, tx: &mut Self::Tx, producer: &str) -> Result<Cursor, Self::Error>;
-    async fn advance(&self, tx: &mut Self::Tx, producer: &str, to: Cursor) -> Result<(), Self::Error>;
-    async fn reset_cursor(&self, producer: &str, to: Cursor) -> Result<(), Self::Error>;
-    async fn park(&self, tx: &mut Self::Tx, letter: &DeadLetter) -> Result<(), Self::Error>;
-    async fn is_parked(&self, tx: &mut Self::Tx, producer: &str, aggregate: &str) -> Result<bool, Self::Error>;
-    async fn parked(&self, producer: &str, filter: &ParkedFilter) -> Result<Vec<DeadLetter>, Self::Error>;
-    async fn resolve(&self, tx: &mut Self::Tx, producer: &str, seq: Seq) -> Result<(), Self::Error>;
+    /// Exclusive until the tx ends (SELECT … FOR UPDATE semantics); creates the row on first use.
+    async fn lock_cursor(&self, tx: &mut Self::Tx, key: &CursorKey) -> Result<Cursor, Self::Error>;
+    async fn advance(&self, tx: &mut Self::Tx, key: &CursorKey, to: Cursor) -> Result<(), Self::Error>;
+    async fn cursor(&self, key: &CursorKey) -> Result<Cursor, Self::Error>;          // no lock
+    async fn reset_cursor(&self, key: &CursorKey, to: Cursor) -> Result<(), Self::Error>;
+    async fn park(&self, tx: &mut Self::Tx, letter: &DeadLetter) -> Result<(), Self::Error>; // upsert
+    /// MUST see this transaction's own parks and resolves.
+    async fn is_parked(&self, tx: &mut Self::Tx, key: &CursorKey, aggregate: &str) -> Result<bool, Self::Error>;
+    async fn parked(&self, key: &CursorKey, filter: &ParkedFilter) -> Result<Vec<DeadLetter>, Self::Error>;
+    async fn resolve(&self, tx: &mut Self::Tx, key: &CursorKey, seq: Seq) -> Result<(), Self::Error>;
 }
 
 /// Host business logic for one subscription.
 pub trait Handler<S: Store>: Send + Sync + 'static {
-    async fn handle(&self, tx: &mut S::Tx, event: &Event) -> Result<(), HandlerError>;
+    fn handle(&self, tx: &mut S::Tx, event: &Event) -> impl Future<Output = Result<(), HandlerError>> + Send;
 }
 pub enum HandlerError { Transient(BoxError), Permanent(BoxError) }
 ```
+
+- **Leases.** The producer's sequencer calls `sequence_batch` at least once per safety interval (default 1 s), which renews the lease. A lease must therefore live at least three times the safety interval. If `sequence_batch` fails, the sequencer releases the lease and competes for it again.
+- **Store errors and handler errors are separate.** A store error before or around the handler drops the stream and reconnects with backoff; the cursor did not move, so the event comes back. Handler errors and commit errors count as attempts (§8, §10). Public runtime errors box store errors (`SubscriberError::Store`, `FeedError::Unavailable`), so they are not generic.
+- **Notifications are hints.** The producer opens one notification stream and fans it out to its sequencer and feed streams. A lost or lagged hint costs latency only: the sequencer has its safety timer, and each feed stream re-reads the head on its heartbeat.
 
 **Logical data model** (an adapter may map it to tables, collections or anything else):
 
@@ -382,6 +407,7 @@ erDiagram
     FEED_META {
         string epoch "changes on restore or re-init"
         u64 head
+        u64 purged_through "retention boundary"
     }
     FEED_CONSUMERS {
         string consumer PK
@@ -389,12 +415,14 @@ erDiagram
         timestamp acked_at
     }
     FEED_CURSORS {
+        string consumer PK
         string producer PK
         string epoch
         u64 seq "last applied seq"
         timestamp updated_at
     }
     DEAD_LETTERS {
+        string consumer PK
         string producer PK
         u64 seq PK
         string aggregate
@@ -417,25 +445,28 @@ erDiagram
 ```rust
 /// Client side: open a subscription to one producer.
 pub trait Transport: Send + Sync + 'static {
-    type Error: std::error::Error + Send + Sync + 'static;
-    async fn subscribe(&self, producer: &str, start: Start) -> Result<Subscription, Self::Error>;
-    async fn snapshot(&self, producer: &str, req: SnapshotRequest) -> Result<BoxStream<'static, FeedMessage>, Self::Error>;
-    async fn head(&self, producer: &str) -> Result<FeedHead, Self::Error>;
+    fn subscribe(&self, producer: &str, start: Start)
+        -> impl Future<Output = Result<Subscription, TransportError>> + Send;
+    fn snapshot(&self, producer: &str, request: SnapshotRequest)
+        -> impl Future<Output = Result<MessageStream, TransportError>> + Send;
+    fn head(&self, producer: &str) -> impl Future<Output = Result<FeedHead, TransportError>> + Send;
 }
+pub type MessageStream = BoxStream<'static, Result<FeedMessage, TransportError>>;  // Event | Checkpoint
 pub struct Subscription {
-    pub messages: BoxStream<'static, Result<FeedMessage, TransportError>>, // Event | Checkpoint
-    pub acks: AckSender,                                                    // send Ack{applied_seq}
+    pub messages: MessageStream,
+    pub acks: AckSender,          // latest value wins, never blocks
 }
 ```
 
-**Server side**, core provides `FeedSource<S: OutboxStore>`:
-- `open(peer: &PeerId, start: Start) -> Result<FeedStream, FeedError>` does the identity check (`start.consumer == peer`), the ACL check (`Acl::allows(peer, type)`), the epoch check, and then backlog + live.
-- `on_ack(peer, seq)`.
-- `snapshot(peer, req)` and `head()`.
+`TransportError` is a single concrete type, so the subscriber can tell errors worth a reconnect (`Closed`, `Unavailable`, `UnknownProducer`, `Protocol`) from errors that must stop it (`PermissionDenied`, `EpochMismatch`, `BeyondRetention`, `Unsupported`, `InvalidRequest`): `TransportError::is_retryable()`.
+
+**Server side**, core provides `FeedSource<S: OutboxStore>` (from `Producer::feed_source(acl)`):
+- `open(peer: &PeerId, start: Start) -> Result<FeedStream, FeedError>` does, in order: the identity check (`start.consumer == peer`), the ACL check for explicitly requested types, the epoch check (§11), the retention check, and registers the consumer. The stream is pull-based (the transport's flow control is the backpressure; dropping it cancels it): the opening checkpoint, the backlog in batches (default 500) with skip checkpoints, then live push, with heartbeats every 15 s when idle.
+- `on_ack(peer, ack)`, `head()`, and `snapshot(peer, request)`: the host's `Snapshotter` (set with `with_snapshotter`) produces `*Snapshot` events, read in one transaction begun after the head `S` was read; they carry `seq = S` and end with `Checkpoint(S)`.
 
 A transport adapter only maps its wire format to these calls. That is why a new transport (HTTP/SSE, WebSocket, a broker relay) is small.
 
-**In-process transport** (`z_event::transport::InProcess`, in core): a registry of `FeedSource`s keyed by producer name; `subscribe` calls `open` directly over bounded tokio channels. Hosts use it to run several services in one process, and most tests use it.
+**In-process transport** (`z_event::InProcess`, in core): a registry of `FeedSource`s keyed by producer name. `subscribe` calls `open` directly and runs the feed stream on its own task behind a bounded channel (64 messages), so a slow consumer applies backpressure as it would over a network; a second task forwards acks. The peer is the consumer name (both sides run in one process), unless pinned with `as_peer`. Hosts use it to run several services in one process, and most tests use it.
 
 ## 15. Postgres adapter (`z-event-postgres`)
 
@@ -468,7 +499,7 @@ A transport adapter only maps its wire format to these calls. That is why a new 
 
   The `max(seq)` read stays correct after purge, because purge never deletes the head row; `feed_meta.head` is the fallback.
 - **Notifications:** a `PgListener` (a dedicated connection) on both channels, plus the 1-second safety timer.
-- **Cursors:** `lock_cursor` = `SELECT … FOR UPDATE` on `feed_cursors(producer)`; it inserts the row on first use.
+- **Cursors:** `lock_cursor` = `SELECT … FOR UPDATE` on `feed_cursors(consumer, producer)`; it inserts the row on first use.
 - **Rule: runtime-checked queries only** (`sqlx::query`, `query_as`), **never the `query!` macros.** Macros inside a dependency would compile-check against the *host's* `DATABASE_URL` and break host builds. Correctness comes from the conformance suite running against a real Postgres (testcontainers).
 - **Compatibility:** PostgreSQL 13+, and Postgres-compatible distributions that support `LISTEN/NOTIFY` and advisory locks.
 
@@ -488,7 +519,7 @@ A transport adapter only maps its wire format to these calls. That is why a new 
 Server::builder()
     .tls_config(my_mtls)?
     .add_service(my_other_service)
-    .add_service(z_event_grpc::feed_service(producer.feed_source(), MtlsIdentity::default()))
+    .add_service(z_event_grpc::feed_service(producer.feed_source(acl), MtlsIdentity::default()))
     .serve(addr).await?;
 
 // consumer host
@@ -498,10 +529,11 @@ Subscriber::builder(store, z_event_grpc::Client::new(channel), InvoiceHandler)
     .spawn();
 ```
 
-- **Peer identity.** The `PeerIdentity` trait. The default `MtlsIdentity` reads the client certificate subject (CN or a SAN). Hosts may override it, e.g. with a signed token in request metadata.
+- **Peer identity.** The `PeerIdentity` trait lives in this adapter, because it depends on the request type; it yields the core's `PeerId`. The default `MtlsIdentity` reads the client certificate subject (CN or a SAN). Hosts may override it, e.g. with a signed token in request metadata.
+- **Code generation** (decided in ZE1, built in ZE4): `tonic-build` with `protox` at build time, so no system `protoc` is needed.
 - **Errors map to gRPC status codes:**
   - `PERMISSION_DENIED`: the identity doesn't match, or the ACL refuses;
-  - `FAILED_PRECONDITION`: epoch mismatch;
+  - `FAILED_PRECONDITION`: epoch mismatch, or a start below the retention window;
   - `UNAVAILABLE`: the store is unreachable; the Subscriber retries.
 - **Keep-alive.** HTTP/2 keep-alive plus `Checkpoint` heartbeats every 15 s.
 
@@ -548,26 +580,29 @@ message Checkpoint { uint64 seq = 1; uint64 head = 2; string epoch = 3; }
 
 message SnapshotRequest { string consumer = 1; repeated string aggregate_types = 2; }
 message HeadRequest {}
-message HeadResponse { uint64 head = 1; string epoch = 2; }
+message HeadResponse { uint64 head = 1; string epoch = 2; uint64 purged_through = 3; }
 ```
 
 ## 17. Writing your own adapter
 
 1. Implement `Store` + `OutboxStore` and/or `Store` + `CursorStore` (storage), or `Transport` plus a server that exposes `FeedSource` (transport).
 2. Document how you satisfy the **sequencing contract** (§6).
-3. Run the **conformance suite** from `z-event-testkit` in your adapter's tests:
+3. Run the **conformance suites** from `z-event-testkit` in your adapter's tests. The macros generate one multi-threaded `#[tokio::test]` per case; `storage::run_all` and `transport::run_all` run them in one test, and every case is also a public function.
 
    ```rust
-   #[tokio::test]
-   async fn conformance() {
-       z_event_testkit::storage::run_all(|| async { MyStore::fresh().await }).await;
-   }
+   // storage adapter: the factory returns a NEW, EMPTY storage per call (for SQL: a new schema)
+   z_event_testkit::storage_suite!(|| async { MyStore::fresh().await });
+
+   // transport adapter: implement TransportHarness (serve a FeedSource, return a client for a peer)
+   z_event_testkit::transport_suite!(|| async { MemoryStore::new() }, MyHarness);
    ```
+
+   The store under test implements both `OutboxStore` and `CursorStore`: test handlers record their effects by appending to the consumer store's own outbox, in the handler's transaction, so effects are atomic with the cursor and countable through the ports alone. `ZEVENT_TESTKIT_SEED` fixes the random seed (printed on every run); `ZEVENT_TESTKIT_SCALE` multiplies iteration counts.
 
    | Suite | Checks |
    |---|---|
-   | `storage` | commit-order gap (50 concurrent transactions with random commit delays, some held open), gapless `seq`, crash mid-apply (×1000 random kill points: effect and cursor never diverge), sequencer failover (< 5 s, no gaps), poison → park → per-aggregate blocking → replay, consumer outage (100 events → exactly once), duplicate after reconnect skipped, purge respects acks, epoch mismatch detected |
-   | `transport` | network drop in a loop (fault-injecting proxy): no loss, no duplicate effects; identity and ACL enforced; backpressure with a slow consumer; heartbeats; reconnect with backoff |
+   | `storage` (24 cases) | the sequencing contract: commit-order gap (50 concurrent transactions with random commit delays, some held open, some rolled back, a live reader), gapless and immutable `seq`, only committed events sequenced; read contract and envelope round trip; exclusive leases and cursor locks; parking visibility; purge respects acks and keeps the head; epochs and notifications; consumer outage (exactly once); duplicates after reconnect skipped; concurrent subscribers of one consumer; crash mid-apply ×1000 (a handler that hangs at planned points, a store that crashes right before or after its N-th operation, and random aborts: effect and cursor never diverge); sequencer failover (crash < 5 s, graceful < 2 s, no gaps); poison and transient failures → park → per-aggregate blocking → replay; filtered checkpoints; epoch mismatch (three variants); retention boundary; cursor reset |
+   | `transport` (9 cases) | network drops in a loop (no loss, no duplicate effects); identity and ACL enforced; backpressure with a slow consumer; heartbeats; reconnect with exponential backoff and jitter; acks reach the producer; ordered delivery and checkpoint promise; head and snapshot |
 
 **Sketch: a MongoDB storage adapter**
 - `Tx` = a `ClientSession` with a multi-document transaction (requires a replica set).
@@ -588,10 +623,13 @@ message HeadResponse { uint64 head = 1; string epoch = 2; }
 
 | Metric | Suggested alert |
 |---|---|
-| `feed_head_seq{producer}`, `feed_unsequenced_rows{producer}` | unsequenced > 0 for more than 10 s (sequencer stuck) |
+| `feed_head_seq{producer}`, `feed_unsequenced_rows{producer}`, `feed_sequencer_leader{producer}` | unsequenced > 0 for more than 10 s (sequencer stuck); no replica leading |
 | `feed_consumer_lag_events{producer,consumer}`, `feed_consumer_lag_seconds{…}` (now − `occurred_at` of the last applied event) | lag > 60 s for 5 min |
-| `feed_dead_letters{consumer}` | > 0 |
-| `feed_stream_reconnects_total`, `feed_epoch_mismatch_total` | reconnect storms; any epoch mismatch |
+| `feed_dead_letters{producer,consumer}` | > 0 |
+| `feed_stream_reconnects_total`, `feed_epoch_mismatch_total`, `feed_epoch_rotations_total` | reconnect storms; any epoch mismatch or rotation |
+| `feed_appended_total`, `feed_purged_total`, `feed_streams_open`, `feed_consumer_acked_seq`, `feed_events_applied_total`, `feed_handler_errors_total{kind}`, `feed_apply_seconds` | dashboards |
+
+Metric names are constants in `z_event::telemetry`. Spans: `z_event.append`, `z_event.producer`, `z_event.subscriber`, `z_event.apply` (with `seq`, `event_id`, `event_type`, `aggregate`, `correlation_id`).
 
 The handler span is linked to the producer's request through `correlation_id`, so one trace shows the whole flow from the user's action to the last effect.
 
