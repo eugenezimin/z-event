@@ -11,3 +11,13 @@
 //!
 //! This crate is the database- and transport-agnostic core. Storage and
 //! network transport are adapters (see the repository's `DESIGN.md`).
+
+pub mod error;
+pub mod types;
+
+pub use error::{BoxError, FeedError, HandlerError, SubscriberError, TransportError};
+pub use types::*;
+
+pub use bytes::Bytes;
+pub use time::OffsetDateTime;
+pub use ulid::Ulid;

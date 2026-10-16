@@ -14,6 +14,21 @@ categories.workspace = true
 name = "z_event"
 
 [dependencies]
+bytes      = { workspace = true }
+fastrand   = { workspace = true }
+futures    = { workspace = true }
+metrics    = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+time       = { workspace = true }
+tokio      = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tokio-util = { workspace = true }
+tracing    = { workspace = true }
+ulid       = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros", "test-util"] }
 
 [lints]
 workspace = true
