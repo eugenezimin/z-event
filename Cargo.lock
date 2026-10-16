@@ -564,6 +564,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "z-event-memory"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "thiserror",
+ "time",
+ "tokio",
+ "z-event",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
