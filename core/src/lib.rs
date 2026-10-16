@@ -13,11 +13,16 @@
 //! network transport are adapters (see the repository's `DESIGN.md`).
 
 pub mod error;
+pub mod feed;
 pub mod ports;
+pub mod producer;
+pub mod telemetry;
 pub mod types;
 
 pub use error::{BoxError, FeedError, HandlerError, SubscriberError, TransportError};
+pub use feed::{FeedSource, FeedStream};
 pub use ports::*;
+pub use producer::{FeedConfig, Producer, ProducerConfig, ProducerHandle};
 pub use types::*;
 
 pub use bytes::Bytes;

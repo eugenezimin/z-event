@@ -10,7 +10,7 @@ use crate::error::TransportError;
 use crate::types::{FeedHead, FeedMessage, Seq, SnapshotRequest, Start};
 
 /// Opens subscriptions to producers. The server side of a transport exposes
-/// the core `FeedSource`; a transport only maps its wire
+/// the core [`FeedSource`](crate::FeedSource); a transport only maps its wire
 /// format to the protocol messages.
 pub trait Transport: Send + Sync + 'static {
     /// Opens a subscription to `producer`.
