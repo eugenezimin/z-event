@@ -1,6 +1,8 @@
 //! Behaviour specific to the in-memory adapter (the shared contract is
 //! covered by the conformance suites).
 
+#![allow(clippy::unwrap_used)]
+
 use std::time::Duration;
 
 use time::OffsetDateTime;

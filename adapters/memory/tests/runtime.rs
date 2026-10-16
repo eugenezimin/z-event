@@ -1,6 +1,8 @@
 //! Core runtime behaviour on the memory adapter and the in-process
 //! transport. The exhaustive contract lives in the conformance suites.
 
+#![allow(clippy::unwrap_used)]
+
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
