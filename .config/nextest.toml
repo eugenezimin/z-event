@@ -1,0 +1,7 @@
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[profile.ci]
+fail-fast = false
+# Never retry: a flaky delivery test is a bug, not noise.
+retries = 0
