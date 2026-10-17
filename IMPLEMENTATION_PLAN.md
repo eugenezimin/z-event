@@ -62,10 +62,24 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 
 **Outcome of ZE1–ZE2:**
 - Port signatures are final (DESIGN §13–§14). Decisions made while building them are recorded in DESIGN: cursors keyed by (consumer, producer), a single `TransportError`, the opening checkpoint that carries the epoch, lease fencing and renewal, `purged_through` with `BeyondRetention`, notifications as hints.
-- `z-event-memory` with the in-process transport passes both suites: 24 storage cases and 9 transport cases. The suites were checked against seeded bugs (no dedup, effect and cursor in separate transactions, skipped backlog events, sequencing uncommitted appends); each makes at least one case fail.
+- `z-event-memory` with the in-process transport passes both suites: 26 storage cases and 9 transport cases. The suites were checked against seeded bugs (no dedup, effect and cursor in separate transactions, skipped backlog events, sequencing uncommitted appends, and three bugs in batched apply); each makes at least one case fail.
+- Gaps closed at the end of ZE2:
+  - batched apply is tested, including inside the crash test;
+  - the retention task and `InProcess` re-registration are tested;
+  - a metrics test checks every documented `feed_*` metric and its labels;
+  - every public type and trait has a rustdoc example;
+  - `cargo nextest` (CI profile), `cargo deny` and `actionlint` pass locally;
+  - the ports were reviewed against the MongoDB sketch, which found the ZE3 prerequisite above.
 - `PeerIdentity` moved to the transport adapters (core keeps `PeerId`); `z-event-grpc` defines it in ZE4.
 
 ### ZE3. Postgres adapter (`z-event-postgres`). Size: M (1–1.5 weeks)
+
+**Prerequisite (from the MongoDB port review, DESIGN §17):** decide how stores report retryable conflicts. A MongoDB transaction cannot wait for a locked cursor; it fails with a `WriteConflict`. Postgres can also fail this way, with a deadlock (`40P01`). Proposal:
+- add `Store::is_conflict(&Self::Error) -> bool`, defaulting to `false`;
+- the subscriber retries the apply in a fresh transaction on a conflict, instead of reconnecting;
+- `cursor_lock_exclusive` accepts "wait, then see" or "conflict, then succeed on retry".
+
+Settle this first, so the Postgres adapter is built against the final ports.
 
 **Tasks:**
 1. Embedded migrations with their own history table; `migrate(&pool)`; unqualified table names (works per schema via `search_path`).

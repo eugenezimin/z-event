@@ -23,6 +23,18 @@ use crate::telemetry;
 use crate::types::{Cursor, CursorKey, DeadLetter, Epoch, FeedMessage, ParkedFilter, Seq, Start};
 
 /// What a running subscriber is doing.
+///
+/// ```
+/// use z_event::{SubscriberHandle, SubscriberStatus};
+///
+/// fn healthy(handle: &SubscriberHandle) -> bool {
+///     match handle.status() {
+///         SubscriberStatus::Streaming { cursor, head } => head.get().saturating_sub(cursor.get()) < 1000,
+///         SubscriberStatus::Connecting | SubscriberStatus::Backoff { .. } => true,
+///         SubscriberStatus::Stopped(_) => false,
+///     }
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubscriberStatus {
     /// Opening a subscription.
@@ -45,6 +57,17 @@ pub enum SubscriberStatus {
 }
 
 /// Why a subscriber stopped.
+///
+/// ```
+/// use z_event::{StopReason, SubscriberStatus};
+///
+/// fn needs_rebuild(status: &SubscriberStatus) -> bool {
+///     matches!(
+///         status,
+///         SubscriberStatus::Stopped(StopReason::EpochMismatch | StopReason::BeyondRetention)
+///     )
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StopReason {
     /// Shut down on request.
@@ -81,6 +104,22 @@ pub(crate) struct Inner<S, T, H> {
 }
 
 /// Builds a [`Subscriber`]. `consumer` and `producer` are required.
+///
+/// ```
+/// use std::time::Duration;
+/// use z_event::{Backoff, CursorStore, Handler, RetryPolicy, Subscriber, SubscriberHandle, Transport};
+///
+/// fn projection<S: CursorStore, T: Transport, H: Handler<S>>(store: S, transport: T, handler: H) -> SubscriberHandle {
+///     Subscriber::builder(store, transport, handler)
+///         .consumer("search")
+///         .producer("orders")
+///         .batch_size(100) // projections: many events per transaction
+///         .retry(RetryPolicy { max_attempts: 10, ..RetryPolicy::default() })
+///         .reconnect(Backoff::new(Duration::from_millis(200), Duration::from_secs(60)))
+///         .ack_interval(Duration::from_secs(10))
+///         .spawn()
+/// }
+/// ```
 pub struct SubscriberBuilder<S, T, H> {
     store: S,
     transport: T,
@@ -323,6 +362,17 @@ where
 }
 
 /// Controls a spawned [`Subscriber`].
+///
+/// ```
+/// use z_event::SubscriberHandle;
+///
+/// async fn stop(handle: SubscriberHandle) {
+///     // Finishes the event in progress and sends a final ack.
+///     if let Err(e) = handle.shutdown().await {
+///         eprintln!("subscriber failed: {e}");
+///     }
+/// }
+/// ```
 #[derive(Debug)]
 pub struct SubscriberHandle {
     cancel: CancellationToken,

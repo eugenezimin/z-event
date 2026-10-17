@@ -183,6 +183,20 @@ pub async fn expect_stop(handle: SubscriberHandle, reason: StopReason) -> Subscr
 
 /// A producer service (`orders`) and a consumer service (`billing`), each
 /// with a fresh store, wired through [`InProcess`].
+///
+/// ```
+/// use z_event_testkit::{StoreFactory, World};
+///
+/// async fn smoke<F: StoreFactory>(factory: &F) {
+///     let w = World::new(factory).await;
+///     w.append_n(10, "OrderConfirmed", "orders").await;
+///     let sub = w.subscriber(w.transport.clone(), w.effect_handler()).spawn();
+///     w.wait_cursor(10).await;
+///     sub.shutdown().await.unwrap();
+///     z_event_testkit::util::assert_exactly_once(&w.effects().await, 1..=10);
+///     w.shutdown().await;
+/// }
+/// ```
 pub struct World<S: OutboxStore + CursorStore + Clone> {
     /// The producer's storage.
     pub orders: S,

@@ -51,7 +51,11 @@ pub async fn duplicate_after_reconnect_skipped<F: StoreFactory>(f: &F) {
         15,
         rng(2).u64(..),
     );
-    let sub = w.subscriber(transport.clone(), w.effect_handler()).spawn();
+    // Batches: resent events must also be skipped inside a batch.
+    let sub = w
+        .subscriber(transport.clone(), w.effect_handler())
+        .batch_size(8)
+        .spawn();
     w.wait_cursor(n).await;
     sub.shutdown().await.unwrap();
     assert!(transport.cuts() > 0, "streams were cut");
@@ -59,11 +63,13 @@ pub async fn duplicate_after_reconnect_skipped<F: StoreFactory>(f: &F) {
     w.shutdown().await;
 }
 
-/// Two subscribers with the same consumer name never apply an event twice.
+/// Two subscribers with the same consumer name (one applying in batches)
+/// never apply an event twice.
 pub async fn concurrent_subscribers_same_consumer<F: StoreFactory>(f: &F) {
     let w = World::new(f).await;
     let a = w
         .subscriber(w.transport.clone(), w.effect_handler())
+        .batch_size(8)
         .spawn();
     let b = w
         .subscriber(w.transport.clone(), w.effect_handler())
@@ -73,6 +79,77 @@ pub async fn concurrent_subscribers_same_consumer<F: StoreFactory>(f: &F) {
     a.shutdown().await.unwrap();
     b.shutdown().await.unwrap();
     assert_exactly_once(&w.effects().await, 1..=150);
+    w.shutdown().await;
+}
+
+/// Events that arrive together are applied in batches (one transaction per
+/// batch) exactly once, and a restart adds nothing.
+pub async fn batched_apply_exactly_once<F: StoreFactory>(f: &F) {
+    let w = World::new(f).await;
+    w.append_n(200, "OrderConfirmed", "orders").await;
+    let sub = w
+        .subscriber(w.transport.clone(), w.effect_handler())
+        .batch_size(16)
+        .spawn();
+    w.wait_cursor(200).await;
+    sub.shutdown().await.unwrap();
+    let again = w
+        .subscriber(w.transport.clone(), w.effect_handler())
+        .batch_size(16)
+        .spawn();
+    w.append_n(40, "OrderConfirmed", "live").await;
+    w.wait_cursor(240).await;
+    again.shutdown().await.unwrap();
+    assert_exactly_once(&w.effects().await, 1..=240);
+    w.shutdown().await;
+}
+
+/// A failing event inside a batch rolls the batch back; the events are
+/// re-applied one by one, the failing aggregate is parked (and later
+/// events of it behind it), everything else is applied exactly once, and
+/// replay resolves the parked events in order.
+pub async fn batched_apply_poison_falls_back<F: StoreFactory>(f: &F) {
+    let w = World::new(f).await;
+    let poisoned = [5u64, 12, 20];
+    for seq in 1..=30u64 {
+        let aggregate = if poisoned.contains(&seq) {
+            "orders/p".to_owned()
+        } else {
+            format!("orders/{seq}")
+        };
+        w.append("T", &aggregate).await;
+    }
+    let handler = PoisonHandler::permanent(w.effect_handler());
+    handler.poison("orders/p");
+    let sub = w
+        .subscriber(w.transport.clone(), handler.clone())
+        .batch_size(16)
+        .build();
+    let running = sub.spawn();
+    w.wait_cursor(30).await;
+    assert_exactly_once(
+        &w.effects().await,
+        (1..=30).filter(|s| !poisoned.contains(s)),
+    );
+    let parked = sub.parked(ParkedFilter::unresolved()).await.unwrap();
+    assert_eq!(
+        parked.iter().map(|l| l.seq().get()).collect::<Vec<_>>(),
+        poisoned
+    );
+    assert_eq!(parked[0].attempts, 1);
+    assert_eq!(parked[1].attempts, 0, "parked behind the first");
+
+    handler.heal();
+    let report = sub.replay_parked(ParkedFilter::unresolved()).await.unwrap();
+    assert_eq!(report.replayed, 3);
+    let effects = w.effects().await;
+    assert_eq!(
+        &effects[effects.len() - 3..],
+        poisoned,
+        "replayed in seq order"
+    );
+    assert_exactly_once(&effects, 1..=30);
+    running.shutdown().await.unwrap();
     w.shutdown().await;
 }
 
@@ -92,7 +169,9 @@ pub async fn crash_mid_apply<F: StoreFactory>(f: &F) {
             head += 20;
         }
         // Kill at a planned handler point, right before or after a random
-        // store operation (e.g. just after a commit), or at a random time.
+        // store operation (e.g. just after a commit), or at a random time;
+        // half of the runs apply buffered events in batches.
+        let batch = if rng.bool() { 1 } else { 8 };
         let (sub, killed) = if rng.bool() {
             let point = if rng.bool() {
                 KillPoint::BeforeHandle
@@ -101,7 +180,11 @@ pub async fn crash_mid_apply<F: StoreFactory>(f: &F) {
             };
             let handler = KillingHandler::new(w.effect_handler(), rng.u32(0..4), point);
             let killed = handler.killed();
-            (w.subscriber(w.transport.clone(), handler).spawn(), killed)
+            let sub = w
+                .subscriber(w.transport.clone(), handler)
+                .batch_size(batch)
+                .spawn();
+            (sub, killed)
         } else {
             let timing = if rng.bool() {
                 CrashTiming::Before
@@ -119,6 +202,7 @@ pub async fn crash_mid_apply<F: StoreFactory>(f: &F) {
             .producer(PRODUCER)
             .retry(crate::util::retry())
             .reconnect(crate::util::reconnect())
+            .batch_size(batch)
             .spawn();
             (sub, killed)
         };

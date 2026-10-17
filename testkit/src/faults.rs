@@ -14,6 +14,12 @@ use z_event::{
 };
 
 /// Where a [`KillingHandler`] stops.
+///
+/// ```
+/// use z_event_testkit::faults::KillPoint;
+/// // AfterEffect: the handler's writes are in the transaction, the commit never happens.
+/// assert_ne!(KillPoint::BeforeHandle, KillPoint::AfterEffect);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KillPoint {
     /// Before the inner handler runs.
@@ -25,6 +31,16 @@ pub enum KillPoint {
 /// Delegates until a planned event, then signals [`killed`](Self::killed)
 /// and hangs forever, so the driver can abort the subscriber task right
 /// there: the open transaction is dropped, exactly as in a crash.
+///
+/// ```
+/// use z_event::{Handler, Store};
+/// use z_event_testkit::faults::{KillPoint, KillingHandler};
+///
+/// fn crash_on_third<S: Store, H: Handler<S>>(handler: H) -> KillingHandler<H> {
+///     // Writes the third event's effect, then hangs before the commit.
+///     KillingHandler::new(handler, 2, KillPoint::AfterEffect)
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct KillingHandler<H> {
     inner: H,
@@ -71,6 +87,15 @@ impl<S: Store, H: Handler<S>> Handler<S> for KillingHandler<H> {
 
 /// Ends every subscription with [`TransportError::Closed`] after a random
 /// number of messages in `[1, max_messages]`.
+///
+/// ```
+/// use z_event::Transport;
+/// use z_event_testkit::faults::StreamCutter;
+///
+/// fn flaky_network<T: Transport>(transport: T) -> StreamCutter<T> {
+///     StreamCutter::new(transport, 20, 42) // cut after 1-20 messages, seed 42
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct StreamCutter<T> {
     inner: T,
@@ -134,6 +159,15 @@ impl<T: Transport> Transport for StreamCutter<T> {
 
 /// Subscribes `rewind` events before the requested position, so the
 /// producer resends events the consumer already applied.
+///
+/// ```
+/// use z_event::Transport;
+/// use z_event_testkit::faults::ReplayingTransport;
+///
+/// fn with_resends<T: Transport>(transport: T) -> ReplayingTransport<T> {
+///     ReplayingTransport::new(transport, 10) // resend the last 10 events on every subscribe
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct ReplayingTransport<T> {
     inner: T,
@@ -172,6 +206,15 @@ impl<T: Transport> Transport for ReplayingTransport<T> {
 
 /// Fails the first `failures` subscribe attempts with
 /// [`TransportError::Unavailable`] and records when every attempt happened.
+///
+/// ```
+/// use z_event::Transport;
+/// use z_event_testkit::faults::FlakyTransport;
+///
+/// fn producer_down_at_first<T: Transport>(transport: T) -> FlakyTransport<T> {
+///     FlakyTransport::new(transport, 4) // the first 4 subscribes fail
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct FlakyTransport<T> {
     inner: T,
@@ -229,6 +272,12 @@ impl<T: Transport> Transport for FlakyTransport<T> {
 }
 
 /// When a [`CrashingStore`] crashes relative to the planned operation.
+///
+/// ```
+/// use z_event_testkit::faults::CrashTiming;
+/// // After: the operation (e.g. a commit) completed, nothing after it runs.
+/// assert_ne!(CrashTiming::Before, CrashTiming::After);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CrashTiming {
     /// Before the operation reaches the store.
@@ -242,6 +291,15 @@ pub enum CrashTiming {
 /// using it at exactly that point. With [`CrashTiming::After`] on a
 /// commit, the commit is durable but nothing after it runs — the point
 /// where splitting effect and cursor into two transactions would show.
+///
+/// ```
+/// use z_event::{CursorStore, OutboxStore};
+/// use z_event_testkit::faults::{CrashTiming, CrashingStore};
+///
+/// fn crash_after_fifth_operation<S: OutboxStore + CursorStore + Clone>(store: S) -> CrashingStore<S> {
+///     CrashingStore::new(store, 4, CrashTiming::After)
+/// }
+/// ```
 pub struct CrashingStore<S> {
     inner: S,
     countdown: Arc<AtomicU32>,

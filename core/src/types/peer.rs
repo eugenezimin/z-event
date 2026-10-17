@@ -5,6 +5,12 @@ use std::fmt;
 /// The identity of the caller, as established by the transport (for gRPC,
 /// the mTLS client certificate). A consumer may only subscribe under its
 /// own name: `Start::consumer` must equal the peer id.
+///
+/// ```
+/// use z_event::PeerId;
+/// let peer = PeerId::from("billing");
+/// assert_eq!(peer.as_str(), "billing");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(String);
 

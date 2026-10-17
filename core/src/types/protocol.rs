@@ -10,6 +10,17 @@ use super::position::{Epoch, Seq};
 
 /// Opens a subscription: "I have applied up to `from_seq` in `epoch`; send me
 /// these types".
+///
+/// ```
+/// use z_event::{Seq, Start};
+/// let start = Start {
+///     consumer: "billing".into(),
+///     from_seq: Seq(120),
+///     epoch: None, // first subscribe
+///     types: vec!["OrderConfirmed".into()],
+/// };
+/// assert!(start.filter().matches("OrderConfirmed"));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Start {
     /// The consumer name; must match the caller's identity.
@@ -31,6 +42,12 @@ impl Start {
 
 /// "I have durably applied everything up to `applied_seq`." Sent every few
 /// seconds; feeds lag metrics and retention. Delivery never waits for acks.
+///
+/// ```
+/// use z_event::{Ack, Seq};
+/// let ack = Ack { applied_seq: Seq(176) };
+/// assert_eq!(ack.applied_seq.get(), 176);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ack {
     /// Highest durably applied position.
@@ -44,6 +61,13 @@ pub struct Ack {
 /// cursor to `seq` even if it received no event there (filtered-out ranges).
 /// A stream always opens with a checkpoint at the consumer's `from_seq`; it
 /// tells a new consumer the feed's epoch.
+///
+/// ```
+/// use z_event::{Checkpoint, Epoch, Seq};
+/// // Events 161-175 had other types: the consumer may move its cursor to 175.
+/// let cp = Checkpoint { seq: Seq(175), head: Seq(175), epoch: Epoch::new("e1").unwrap() };
+/// assert!(cp.seq <= cp.head);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
     /// Everything matching up to here was sent.
@@ -55,6 +79,16 @@ pub struct Checkpoint {
 }
 
 /// A message from producer to consumer.
+///
+/// ```
+/// use z_event::FeedMessage;
+/// fn describe(msg: &FeedMessage) -> String {
+///     match msg {
+///         FeedMessage::Event(e) => format!("event {} ({})", e.seq, e.event_type),
+///         FeedMessage::Checkpoint(c) => format!("checkpoint {} of {}", c.seq, c.head),
+///     }
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FeedMessage {
     /// One event, in `seq` order.
@@ -65,6 +99,15 @@ pub enum FeedMessage {
 
 /// Asks the producer for the current state of aggregates (bootstrap of a new
 /// consumer beyond retention).
+///
+/// ```
+/// use z_event::SnapshotRequest;
+/// let request = SnapshotRequest {
+///     consumer: "search".into(),
+///     aggregate_types: vec!["orders".into()],
+/// };
+/// assert_eq!(request.aggregate_types.len(), 1);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotRequest {
     /// The consumer name; must match the caller's identity.
@@ -75,6 +118,14 @@ pub struct SnapshotRequest {
 
 /// Wake-up hints from a storage adapter. They may be coalesced or lost; a
 /// lost hint only costs latency, because the producer re-checks on timers.
+///
+/// ```
+/// use z_event::Notification;
+/// fn wakes_feed_streams(n: Notification) -> bool {
+///     matches!(n, Notification::Sequenced(_) | Notification::Lagged)
+/// }
+/// assert!(!wakes_feed_streams(Notification::Appended));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Notification {
     /// Events were committed to the outbox (wake the sequencer).

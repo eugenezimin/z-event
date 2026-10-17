@@ -55,6 +55,17 @@ use crate::tx::LetterOp;
 pub use crate::tx::MemoryTx;
 
 /// Errors of the in-memory store.
+///
+/// ```
+/// # tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async {
+/// use z_event::Store;
+/// use z_event_memory::{MemoryError, MemoryStore};
+/// let store = MemoryStore::new();
+/// store.set_unavailable(true);
+/// assert_eq!(store.begin().await.err(), Some(MemoryError::Unavailable));
+/// # Ok::<(), z_event_memory::MemoryError>(())
+/// # }).unwrap();
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum MemoryError {
@@ -71,12 +82,35 @@ pub enum MemoryError {
 
 /// Proof of sequencer leadership on a [`MemoryStore`]. Dropping it without
 /// `release` simulates a crash: it frees itself when it expires.
+///
+/// ```
+/// # tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async {
+/// use z_event::OutboxStore;
+/// use z_event_memory::MemoryStore;
+/// let store = MemoryStore::new();
+/// let lease = store.try_lead().await?.expect("no other leader");
+/// assert!(store.try_lead().await?.is_none());
+/// store.release(lease).await?;
+/// # Ok::<(), z_event_memory::MemoryError>(())
+/// # }).unwrap();
+/// ```
 #[derive(Debug)]
 pub struct MemoryLease {
     token: u64,
 }
 
 /// In-memory storage for one service. Cheap to clone; clones share state.
+///
+/// ```
+/// # tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async {
+/// use z_event::{OutboxStore, Seq};
+/// use z_event_memory::MemoryStore;
+/// let orders = MemoryStore::new();
+/// let replica = orders.clone(); // the same storage, like a second process on one database
+/// assert_eq!(replica.head().await?.seq, Seq::ZERO);
+/// # Ok::<(), z_event_memory::MemoryError>(())
+/// # }).unwrap();
+/// ```
 #[derive(Clone)]
 pub struct MemoryStore {
     inner: Arc<Inner>,
@@ -95,6 +129,16 @@ impl Default for MemoryStore {
 }
 
 /// Configures a [`MemoryStore`].
+///
+/// ```
+/// use std::time::Duration;
+/// use z_event_memory::MemoryStore;
+/// let store = MemoryStore::builder()
+///     .lease_ttl(Duration::from_millis(300)) // fast failover in tests
+///     .notify_capacity(4096)
+///     .build();
+/// # let _ = store;
+/// ```
 #[derive(Debug, Clone)]
 pub struct MemoryStoreBuilder {
     lease_ttl: Duration,

@@ -14,6 +14,21 @@ use super::position::Seq;
 /// A sequenced event, as read from the feed and delivered to handlers.
 ///
 /// z-event never interprets `headers` or `payload`; they belong to the host.
+///
+/// ```
+/// use z_event::{NewEvent, Seq};
+///
+/// #[derive(serde::Deserialize)]
+/// struct OrderConfirmed { order_id: String }
+///
+/// let ev = NewEvent::new("OrderConfirmed", "orders/o1", 1, r#"{"order_id":"o1"}"#)
+///     .header("tenant", "acme")
+///     .into_event(Seq(1));
+/// let payload: OrderConfirmed = ev.json()?;
+/// assert_eq!(payload.order_id, "o1");
+/// assert_eq!(ev.header("tenant"), Some("acme"));
+/// # Ok::<(), serde_json::Error>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     /// Position in the producer's feed: gapless, commit order.

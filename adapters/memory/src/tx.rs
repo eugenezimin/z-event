@@ -21,6 +21,22 @@ pub(crate) enum LetterOp {
 /// the transaction rolls it back. Reads see the transaction's own writes.
 /// Row locks (cursors, and host keys via [`lock`](MemoryTx::lock)) are held
 /// until the transaction ends.
+///
+/// ```
+/// # tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap().block_on(async {
+/// use z_event::Store;
+/// use z_event_memory::MemoryStore;
+/// let store = MemoryStore::new();
+/// let mut tx = store.begin().await?;
+/// tx.lock("orders/o1").await; // serialise changes to this order
+/// tx.put("orders/o1", "confirmed");
+/// assert_eq!(tx.get("orders/o1").as_deref(), Some(&b"confirmed"[..]));
+/// assert_eq!(store.get("orders/o1"), None); // not committed yet
+/// store.commit(tx).await?;
+/// assert!(store.get("orders/o1").is_some());
+/// # Ok::<(), z_event_memory::MemoryError>(())
+/// # }).unwrap();
+/// ```
 pub struct MemoryTx {
     pub(crate) inner: Arc<Inner>,
     pub(crate) appended: Vec<(u64, NewEvent)>,

@@ -601,16 +601,30 @@ message HeadResponse { uint64 head = 1; string epoch = 2; uint64 purged_through 
 
    | Suite | Checks |
    |---|---|
-   | `storage` (24 cases) | the sequencing contract: commit-order gap (50 concurrent transactions with random commit delays, some held open, some rolled back, a live reader), gapless and immutable `seq`, only committed events sequenced; read contract and envelope round trip; exclusive leases and cursor locks; parking visibility; purge respects acks and keeps the head; epochs and notifications; consumer outage (exactly once); duplicates after reconnect skipped; concurrent subscribers of one consumer; crash mid-apply ×1000 (a handler that hangs at planned points, a store that crashes right before or after its N-th operation, and random aborts: effect and cursor never diverge); sequencer failover (crash < 5 s, graceful < 2 s, no gaps); poison and transient failures → park → per-aggregate blocking → replay; filtered checkpoints; epoch mismatch (three variants); retention boundary; cursor reset |
+   | `storage` (26 cases) | the sequencing contract: commit-order gap (50 concurrent transactions with random commit delays, some held open, some rolled back, a live reader), gapless and immutable `seq`, only committed events sequenced; read contract and envelope round trip; exclusive leases and cursor locks; parking visibility; purge respects acks and keeps the head; epochs and notifications; consumer outage (exactly once); duplicates after reconnect skipped; concurrent subscribers of one consumer; batched apply (exactly once; a failure inside a batch falls back to one event at a time); crash mid-apply ×1000 (a handler that hangs at planned points, a store that crashes right before or after its N-th operation, and random aborts: effect and cursor never diverge); sequencer failover (crash < 5 s, graceful < 2 s, no gaps); poison and transient failures → park → per-aggregate blocking → replay; filtered checkpoints; epoch mismatch (three variants); retention boundary; cursor reset |
    | `transport` (9 cases) | network drops in a loop (no loss, no duplicate effects); identity and ACL enforced; backpressure with a slow consumer; heartbeats; reconnect with exponential backoff and jitter; acks reach the producer; ordered delivery and checkpoint promise; head and snapshot |
 
-**Sketch: a MongoDB storage adapter**
-- `Tx` = a `ClientSession` with a multi-document transaction (requires a replica set).
-- `append` inserts into an `outbox` collection with `seq: null`.
-- The leader lease is a document with `owner` + `expires_at`, renewed periodically, with fencing by lease version.
-- `sequence_batch` reads `seq: null` documents ordered by `_id`. It skips none that are visible, because Mongo transactions make documents visible atomically on commit. It stamps them from a counter document inside one transaction with the lease check.
-- `notifications()` uses a change stream on `outbox`.
-- The conformance suite decides whether this sketch is correct.
+**Sketch: a MongoDB storage adapter** (reviewed against the final ports at the end of ZE2)
+
+Transactions need a replica set; so do change streams. Every port method maps to a MongoDB primitive:
+
+| Port method | MongoDB |
+|---|---|
+| `Tx`, `begin`, `commit`, `rollback` | a `ClientSession` with a multi-document transaction; commit retries `UnknownTransactionCommitResult`; dropping the session aborts the transaction |
+| `append` | `insertMany` into `outbox` with `seq: null`, in the session |
+| `try_lead`, `release` | a lease document `{token, expires_at}` updated with server time (`$$NOW`); the token is the fencing version |
+| `sequence_batch` | one transaction that re-reads the lease document (fencing, and a write to renew it), stamps the next `seq` values, and moves `feed_meta.head`. **Commit order comes from the oplog:** the sequencer follows a change stream of outbox inserts, which delivers committed inserts in commit order (resume token kept in `feed_meta`). Ordering by `_id` would not do: ObjectIds come from client clocks in different processes, so two transactions on one aggregate, serialised by the host, could be stamped in the wrong order (contract rule 4) |
+| `read`, `head`, `rotate_epoch`, `unsequenced` | indexed `find` on `seq`; the `feed_meta` document; `countDocuments({seq: null})` with a partial index |
+| `notifications` | change streams on `outbox` (inserts → `Appended`) and `feed_meta` (head → `Sequenced`) |
+| `register_consumer`, `ack`, `consumers`, `remove_consumer` | a `feed_consumers` collection; `ack` uses `$max`, which is monotonic by itself |
+| `purge` | sequencing is in time order, so "sequenced before T" is a prefix: compute the boundary, `deleteMany({seq: {$lte: boundary}})`, update `feed_meta.purged_through` |
+| `lock_cursor`, `advance` | a write to the cursor document inside the session (a `findOneAndUpdate` that bumps a lock counter) takes its write lock until commit |
+| `cursor`, `reset_cursor`, `parked` | reads and writes outside the session; a plain write waits for an open transaction's lock |
+| `park`, `resolve`, `is_parked` | upserts and reads in the session; transactions read their own writes |
+
+**One port assumes Postgres-style locks.** `lock_cursor` promises that a second locker *waits* and then sees the committed value. A MongoDB transaction that touches a locked document instead fails at once with a `WriteConflict`. The transaction is aborted and must start over; it cannot wait in place. The subscriber would still be correct: a store error drops the stream, the cursor did not move, and dedup protects the retry. But every conflict would cost a reconnect, and `cursor_lock_exclusive` in the testkit would fail. Postgres can produce the same kind of error: a deadlock (`40P01`) when a host locks rows in a different order. The fix is to let `Store` classify retryable conflicts, for example with `fn is_conflict(err: &Self::Error) -> bool`, defaulting to `false`. The subscriber would then retry the apply in a fresh transaction without reconnecting, and the testkit case would accept "wait, then see" or "conflict, then succeed on retry". This must be decided before ZE3, so the Postgres adapter is built against the final ports (IMPLEMENTATION_PLAN, ZE3 prerequisites).
+
+No other port depends on a Postgres-only feature. Transaction limits (60 s and 16 MB by default) cap how long a handler may run and how large `batch_size` may be; a MongoDB adapter documents them.
 
 ## 18. Security and observability hooks
 

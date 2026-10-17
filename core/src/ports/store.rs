@@ -16,6 +16,17 @@ use crate::types::{
 /// The host uses the **same** transaction for its own business writes. That
 /// is what makes "change + event" (producer) and "effect + cursor"
 /// (consumer) atomic.
+///
+/// ```
+/// use z_event::Store;
+///
+/// /// The host's business writes and z-event's writes share one transaction.
+/// async fn in_one_transaction<S: Store>(store: &S) -> Result<(), S::Error> {
+///     let tx = store.begin().await?;
+///     // … host writes and producer.append(&mut tx, …) …
+///     store.commit(tx).await
+/// }
+/// ```
 pub trait Store: Send + Sync + 'static {
     /// The adapter's native transaction. Dropping it MUST roll it back.
     type Tx: Send + 'static;
@@ -48,6 +59,17 @@ pub trait Store: Send + Sync + 'static {
 /// 3. Once an event has a `seq`, it never changes, and no event is later
 ///    inserted below the head.
 /// 4. Two events for the same aggregate get `seq` values in commit order.
+///
+/// ```
+/// use z_event::{OutboxStore, TypeFilter};
+///
+/// /// Reads what is left of the feed (a feed stream does this in batches).
+/// async fn remaining<S: OutboxStore>(store: &S) -> Result<usize, S::Error> {
+///     let head = store.head().await?;
+///     let events = store.read(head.purged_through, &TypeFilter::All, 10_000).await?;
+///     Ok(events.len())
+/// }
+/// ```
 pub trait OutboxStore: Store {
     /// Proof of sequencer leadership. Dropping it without
     /// [`release`](OutboxStore::release) is a crash: the adapter frees it on
@@ -137,6 +159,15 @@ pub trait OutboxStore: Store {
 }
 
 /// The consumer side: cursors and parked events.
+///
+/// ```
+/// use z_event::{CursorKey, CursorStore};
+///
+/// /// How far `billing` got in the `orders` feed.
+/// async fn position<S: CursorStore>(store: &S) -> Result<u64, S::Error> {
+///     Ok(store.cursor(&CursorKey::new("billing", "orders")).await?.seq.get())
+/// }
+/// ```
 pub trait CursorStore: Store {
     /// Locks the cursor for `key` until the transaction ends and returns it,
     /// creating it on first use. Exclusive across concurrent transactions;

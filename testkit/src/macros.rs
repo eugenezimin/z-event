@@ -18,7 +18,8 @@ macro_rules! storage_suite {
             cursor_lock_exclusive, cursor_round_trip, parking_visibility, purge_respects_acks,
             epoch_rotation, notifications_wake, commit_order_gap, gapless_and_immutable,
             consumer_outage_exactly_once, duplicate_after_reconnect_skipped,
-            concurrent_subscribers_same_consumer, crash_mid_apply, sequencer_failover,
+            concurrent_subscribers_same_consumer, batched_apply_exactly_once,
+            batched_apply_poison_falls_back, crash_mid_apply, sequencer_failover,
             poison_park_replay, transient_retry_then_park, checkpoint_skips_filtered,
             epoch_learned_on_first_subscribe, epoch_mismatch_detected,
             start_below_retention_rejected, reset_cursor_replays

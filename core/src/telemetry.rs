@@ -20,6 +20,16 @@
 //! | `feed_events_applied_total` | counter | producer, consumer | |
 //! | `feed_handler_errors_total` | counter | producer, consumer, kind | |
 //! | `feed_apply_seconds` | histogram | producer, consumer | |
+//!
+//! Use the constants rather than the strings when building dashboards or
+//! alert rules in Rust:
+//!
+//! ```
+//! use z_event::telemetry;
+//!
+//! let alert = format!("{} > 0", telemetry::DEAD_LETTERS);
+//! assert_eq!(alert, "feed_dead_letters > 0");
+//! ```
 
 /// Highest sequenced position.
 pub const HEAD_SEQ: &str = "feed_head_seq";

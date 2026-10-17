@@ -17,6 +17,16 @@ use crate::telemetry;
 use crate::types::{NewEvent, Notification};
 
 /// Feed stream settings.
+///
+/// ```
+/// use std::time::Duration;
+/// use z_event::{FeedConfig, ProducerConfig};
+/// let config = ProducerConfig::new("orders").feed(FeedConfig {
+///     backlog_batch: 1000,
+///     heartbeat: Duration::from_secs(5),
+/// });
+/// # let _ = config;
+/// ```
 #[derive(Clone, Debug)]
 pub struct FeedConfig {
     /// Events per backlog read (default 500).
@@ -35,6 +45,15 @@ impl Default for FeedConfig {
 }
 
 /// Producer settings. Build with [`ProducerConfig::new`] and the setters.
+///
+/// ```
+/// use std::time::Duration;
+/// use z_event::ProducerConfig;
+/// let config = ProducerConfig::new("orders")
+///     .retention(Duration::from_secs(30 * 24 * 3600))
+///     .safety_interval(Duration::from_millis(500));
+/// assert_eq!(config.name(), "orders");
+/// ```
 #[derive(Clone, Debug)]
 pub struct ProducerConfig {
     pub(crate) name: String,
@@ -242,6 +261,17 @@ impl<S: OutboxStore> Producer<S> {
 }
 
 /// Controls a started [`Producer`].
+///
+/// ```
+/// use z_event::{OutboxStore, Producer, ProducerConfig};
+///
+/// async fn run<S: OutboxStore>(store: S) {
+///     let producer = Producer::new(store, ProducerConfig::new("orders"));
+///     let handle = producer.start();
+///     // … serve requests …
+///     handle.shutdown().await; // releases the sequencer lease
+/// }
+/// ```
 #[derive(Debug)]
 pub struct ProducerHandle {
     cancel: CancellationToken,

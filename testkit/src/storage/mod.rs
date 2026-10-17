@@ -8,10 +8,11 @@ mod delivery;
 mod ports;
 
 pub use delivery::{
-    checkpoint_skips_filtered, concurrent_subscribers_same_consumer, consumer_outage_exactly_once,
-    crash_mid_apply, duplicate_after_reconnect_skipped, epoch_learned_on_first_subscribe,
-    epoch_mismatch_detected, poison_park_replay, reset_cursor_replays, sequencer_failover,
-    start_below_retention_rejected, transient_retry_then_park,
+    batched_apply_exactly_once, batched_apply_poison_falls_back, checkpoint_skips_filtered,
+    concurrent_subscribers_same_consumer, consumer_outage_exactly_once, crash_mid_apply,
+    duplicate_after_reconnect_skipped, epoch_learned_on_first_subscribe, epoch_mismatch_detected,
+    poison_park_replay, reset_cursor_replays, sequencer_failover, start_below_retention_rejected,
+    transient_retry_then_park,
 };
 pub use ports::{
     commit_order_gap, cursor_lock_exclusive, cursor_round_trip, envelope_round_trip,
@@ -38,6 +39,8 @@ pub const CASES: &[&str] = &[
     "consumer_outage_exactly_once",
     "duplicate_after_reconnect_skipped",
     "concurrent_subscribers_same_consumer",
+    "batched_apply_exactly_once",
+    "batched_apply_poison_falls_back",
     "crash_mid_apply",
     "sequencer_failover",
     "poison_park_replay",
@@ -68,6 +71,8 @@ pub async fn run_all<F: StoreFactory>(factory: F) {
     consumer_outage_exactly_once(f).await;
     duplicate_after_reconnect_skipped(f).await;
     concurrent_subscribers_same_consumer(f).await;
+    batched_apply_exactly_once(f).await;
+    batched_apply_poison_falls_back(f).await;
     crash_mid_apply(f).await;
     sequencer_failover(f).await;
     poison_park_replay(f).await;

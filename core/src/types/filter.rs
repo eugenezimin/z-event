@@ -3,6 +3,14 @@
 use std::collections::BTreeSet;
 
 /// Which event types a read or a subscription covers.
+///
+/// ```
+/// use z_event::TypeFilter;
+/// let f = TypeFilter::only(["OrderConfirmed", "OrderCancelled"]);
+/// assert!(f.matches("OrderConfirmed"));
+/// assert!(!f.matches("CustomerCreated"));
+/// assert_eq!(TypeFilter::only(Vec::<String>::new()), TypeFilter::All);
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum TypeFilter {
     /// Every type.

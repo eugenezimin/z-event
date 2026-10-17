@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use z_event::{
-    AllowAll, Backoff, CursorStore, Event, FeedConfig, Handler, HandlerError, InProcess, NewEvent,
-    ParkedFilter, Producer, ProducerConfig, RetryPolicy, Seq, Store, Subscriber, SubscriberStatus,
+    AllowAll, Backoff, CursorKey, CursorStore, Event, FeedConfig, Handler, HandlerError, InProcess,
+    NewEvent, OutboxStore, ParkedFilter, Producer, ProducerConfig, RetryPolicy, Seq, Store,
+    Subscriber, SubscriberStatus,
 };
 use z_event_memory::{MemoryStore, MemoryTx};
 
@@ -201,5 +202,121 @@ async fn poison_parks_the_aggregate_and_replay_applies_in_order() {
     assert_eq!(billing.scan_prefix("effect/").len(), 6);
 
     running_sub.shutdown().await.unwrap();
+    running.shutdown().await;
+}
+
+async fn eventually(what: &str, mut cond: impl AsyncFnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !cond().await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retention_purges_on_the_leader_only_and_respects_acks() {
+    let orders = MemoryStore::new();
+    // Another holder owns the lease and sequences 10 events by hand.
+    let foreign = orders.try_lead().await.unwrap().unwrap();
+    for i in 0..10 {
+        let mut tx = orders.begin().await.unwrap();
+        orders
+            .append(&mut tx, &[NewEvent::new("T", format!("x/{i}"), 1, "{}")])
+            .await
+            .unwrap();
+        orders.commit(tx).await.unwrap();
+    }
+    orders.sequence_batch(&foreign, 100).await.unwrap();
+
+    let producer = Producer::new(
+        orders.clone(),
+        ProducerConfig::new("orders")
+            .lead_retry_interval(Duration::from_millis(20))
+            .safety_interval(Duration::from_millis(50))
+            .retention(Duration::ZERO)
+            .retention_interval(Duration::from_millis(30)),
+    );
+    let running = producer.start();
+
+    // Not the leader: nothing is purged although everything is eligible.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!running.is_leader());
+    assert_eq!(orders.head().await.unwrap().purged_through, Seq::ZERO);
+
+    // Leader: purges everything but the head.
+    orders.release(foreign).await.unwrap();
+    eventually("purge by the new leader", async || {
+        orders.head().await.unwrap().purged_through == Seq(9)
+    })
+    .await;
+    assert!(running.is_leader());
+
+    // A registered consumer holds retention back until it acks.
+    orders.register_consumer("billing", Seq(10)).await.unwrap();
+    for i in 10..15 {
+        append(&producer, "T", &format!("x/{i}")).await;
+    }
+    eventually("head 15", async || {
+        orders.head().await.unwrap().seq == Seq(15)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(orders.head().await.unwrap().purged_through, Seq(10));
+    orders.ack("billing", Seq(15)).await.unwrap();
+    eventually("purge after the ack", async || {
+        orders.head().await.unwrap().purged_through == Seq(14)
+    })
+    .await;
+    running.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unregistered_producer_is_retried_until_registered_again() {
+    let orders = MemoryStore::new();
+    let billing = MemoryStore::new();
+    let producer = fast_producer(orders, "orders");
+    let running = producer.start();
+    let transport = InProcess::new();
+    transport.register("orders", producer.feed_source(AllowAll));
+    let sub = Subscriber::builder(billing.clone(), transport.clone(), Record::default())
+        .consumer("billing")
+        .producer("orders")
+        .reconnect(Backoff::new(
+            Duration::from_millis(5),
+            Duration::from_millis(50),
+        ))
+        .build();
+    let handle = sub.spawn();
+    for i in 0..5 {
+        append(&producer, "T", &format!("x/{i}")).await;
+    }
+    wait_cursor(&billing, "billing", "orders", 5).await;
+
+    // Unregister and force a reconnect: the producer is unknown, which is
+    // retryable, so the subscriber backs off instead of stopping.
+    transport.unregister("orders");
+    sub.reset_cursor(sub.cursor().await.unwrap()).await.unwrap();
+    let mut status = handle.status_watch();
+    eventually("backoff", async || {
+        matches!(
+            *status.borrow_and_update(),
+            SubscriberStatus::Backoff { .. }
+        )
+    })
+    .await;
+    for i in 5..10 {
+        append(&producer, "T", &format!("x/{i}")).await;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let key = CursorKey::new("billing", "orders");
+    assert_eq!(billing.cursor(&key).await.unwrap().seq, Seq(5));
+    assert!(!handle.is_finished(), "still retrying");
+
+    transport.register("orders", producer.feed_source(AllowAll));
+    wait_cursor(&billing, "billing", "orders", 10).await;
+    assert_eq!(billing.scan_prefix("effect/").len(), 10);
+    handle.shutdown().await.unwrap();
     running.shutdown().await;
 }

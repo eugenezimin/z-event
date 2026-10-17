@@ -9,6 +9,18 @@ use crate::error::HandlerError;
 
 /// An event the consumer could not apply (or that waits behind one that
 /// could not be applied), stored in the consumer's storage.
+///
+/// ```
+/// use z_event::{CursorKey, DeadLetter, HandlerError, NewEvent, Seq};
+/// let key = CursorKey::new("billing", "orders");
+/// let first = NewEvent::new("T", "orders/o1", 1, "{}").into_event(Seq(3));
+/// let later = NewEvent::new("T", "orders/o1", 2, "{}").into_event(Seq(5));
+/// let failed = DeadLetter::failed(&key, &first, &HandlerError::permanent("bad payload"), 1);
+/// let behind = DeadLetter::behind(&key, &later);
+/// assert_eq!((failed.seq(), failed.attempts), (Seq(3), 1));
+/// assert_eq!(behind.attempts, 0);
+/// assert!(!behind.is_resolved());
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeadLetter {
     /// Which subscription parked it.
@@ -70,6 +82,16 @@ impl DeadLetter {
 }
 
 /// Selects parked events.
+///
+/// ```
+/// use z_event::{ParkedFilter, Seq};
+/// let f = ParkedFilter {
+///     from_seq: Some(Seq(100)),
+///     limit: Some(50),
+///     ..ParkedFilter::unresolved().aggregate("orders/o1")
+/// };
+/// assert!(!f.include_resolved);
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ParkedFilter {
     /// Only this aggregate.
