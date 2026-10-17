@@ -24,6 +24,3 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Tests for batched apply, the retention task, `InProcess` re-registration,
   and every documented metric; rustdoc examples on all public types and
   traits.
-- DESIGN: a review of the ports against a MongoDB adapter. It found one
-  Postgres-shaped assumption (blocking cursor locks), recorded as a ZE3
-  prerequisite.

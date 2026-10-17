@@ -68,18 +68,10 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
   - the retention task and `InProcess` re-registration are tested;
   - a metrics test checks every documented `feed_*` metric and its labels;
   - every public type and trait has a rustdoc example;
-  - `cargo nextest` (CI profile), `cargo deny` and `actionlint` pass locally;
-  - the ports were reviewed against the MongoDB sketch, which found the ZE3 prerequisite above.
+  - `cargo nextest` (CI profile), `cargo deny` and `actionlint` pass locally.
 - `PeerIdentity` moved to the transport adapters (core keeps `PeerId`); `z-event-grpc` defines it in ZE4.
 
 ### ZE3. Postgres adapter (`z-event-postgres`). Size: M (1–1.5 weeks)
-
-**Prerequisite (from the MongoDB port review, DESIGN §17):** decide how stores report retryable conflicts. A MongoDB transaction cannot wait for a locked cursor; it fails with a `WriteConflict`. Postgres can also fail this way, with a deadlock (`40P01`). Proposal:
-- add `Store::is_conflict(&Self::Error) -> bool`, defaulting to `false`;
-- the subscriber retries the apply in a fresh transaction on a conflict, instead of reconnecting;
-- `cursor_lock_exclusive` accepts "wait, then see" or "conflict, then succeed on retry".
-
-Settle this first, so the Postgres adapter is built against the final ports.
 
 **Tasks:**
 1. Embedded migrations with their own history table; `migrate(&pool)`; unqualified table names (works per schema via `search_path`).
@@ -126,7 +118,7 @@ Settle this first, so the Postgres adapter is built against the final ports.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Port design leaks Postgres assumptions | Other adapters (e.g. MongoDB) are hard or impossible | The memory adapter is built first and must pass the full suite; review the ports against the Mongo sketch (DESIGN §17) before ZE3 |
+| Port design leaks Postgres assumptions | Another storage adapter is hard to write later | The memory adapter was built first and passes the full suite, so the ports carry no Postgres-only features |
 | Subtle delivery bugs: gaps, duplicates, stalls | Lost or doubled effects in host systems | Sequencer by design; conformance suite with concurrency and chaos tests on every CI build; lag and unsequenced alerts |
 | Generic traits make the API hard to use | Hosts wrap it inconsistently | Examples first; builders with defaults; one-call turnkey helpers in the gRPC adapter |
 | Async-trait ergonomics (`Send` bounds on generic futures) | Compile errors in hosts | Decided in ZE1: native async methods declared as `impl Future + Send` (implementors write `async fn`), no `async-trait`; the example and the suites run on a multi-threaded runtime |
