@@ -92,7 +92,7 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 - The sequencer failover case runs two producers with separate database sessions in one test process. From PostgreSQL's point of view that is the same as two processes.
 - Finding: with a networked database, a killed task's `COMMIT` can still land after the task is gone. The crash test now reads the cursor under `lock_cursor` (`World::settled`), so it compares effects and cursor only after in-flight transactions finish.
 
-### ZE4. gRPC adapter (`z-event-grpc`). Size: M (1–1.5 weeks)
+### ZE4. gRPC adapter (`z-event-grpc`). Size: M (1–1.5 weeks). ✅ Done
 
 **Tasks:**
 1. `proto/zevent/v1/feed.proto` (DESIGN §16); codegen via `tonic-build` + `protox` in `build.rs` at build time (decided in ZE1: no system `protoc`, nothing generated is committed).
@@ -107,6 +107,12 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 - identity and ACL denial are tested;
 - the service works both mounted on an existing tonic server and standalone;
 - commit → applied latency is p95 < 100 ms in the split example.
+
+**Outcome of ZE4:**
+- `z-event-grpc` on tonic 0.14. Code is generated with `tonic-prost-build` + `protox` (no `protoc`). It provides `feed_service` for host servers, `Client` (a `Transport`) with metadata and bearer tokens, `serve_standalone` / `serve_standalone_with_shutdown`, and `MtlsIdentity`, `TokenIdentity` and `MetadataIdentity`.
+- Errors map to status codes, with details in metadata. A start below retention uses `OUT_OF_RANGE`, so it can be told apart from an epoch mismatch.
+- The transport suite passes over real HTTP/2. Delivery is exactly once through a TCP proxy that cuts connections. Mutual TLS (generated CA and certificates) and bearer tokens on a host-built server are tested. Commit → applied p95 is under 1 ms locally, against the 100 ms target.
+- `examples/split` runs orders and billing as two OS processes on PostgreSQL. Its test spawns both binaries against a container.
 
 ### ZE5. Snapshots, epochs, retention operations, CLI. Size: M (1 week)
 

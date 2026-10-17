@@ -1,6 +1,6 @@
 # z-event: design
 
-> Status: the core (`z-event`), the in-memory adapter (`z-event-memory`), the PostgreSQL adapter (`z-event-postgres`) and the conformance testkit (`z-event-testkit`) are implemented. The gRPC adapter is next. The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Port signatures in §13–§14 are final as of ZE1.
+> Status: the core (`z-event`), the in-memory adapter (`z-event-memory`), the PostgreSQL adapter (`z-event-postgres`), the gRPC adapter (`z-event-grpc`) and the conformance testkit (`z-event-testkit`) are implemented. Operations features (snapshot bootstrap, epoch runbook, CLI) are next. The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Port signatures in §13–§14 are final as of ZE1.
 >
 > z-event is a Rust library for **reliable, push-based, event-driven communication between services without a message broker**. A producer writes events into its own database in the same transaction as the business change (a *transactional outbox*). It then serves that outbox as an ordered feed, and consumers subscribe to it. Each consumer stores its position (cursor) in the same transaction as the effect of the event, so nothing is lost and nothing is applied twice.
 >
@@ -79,7 +79,7 @@ z-event/
 │                           #   tracing, metrics, ulid, time, fastrand. NO database, NO gRPC
 ├── adapters/
 │   ├── postgres/           # crate `z-event-postgres`: storage ports on PostgreSQL (sqlx)
-│   ├── grpc/               # crate `z-event-grpc`: transport port on gRPC (tonic) + feed.proto     [planned, ZE4]
+│   ├── grpc/               # crate `z-event-grpc`: transport port on gRPC (tonic) + feed.proto
 │   └── memory/             # crate `z-event-memory`: in-memory storage (reference implementation, tests, examples)
 ├── testkit/                # crate `z-event-testkit`: conformance suites for storage and transport adapters
 └── examples/               # toy orders → billing: in-process (memory) and split (postgres + grpc)
@@ -511,7 +511,7 @@ A transport adapter only maps its wire format to these calls. That is why a new 
 |---|---|
 | The host already runs a tonic server (its own TLS/mTLS, interceptors, port) | `z_event_grpc::feed_service(source, identity)` returns a tonic service; the host adds it with `Server::builder().add_service(..)` |
 | The host already has a `tonic::transport::Channel` | `z_event_grpc::Client::new(channel)` implements the core `Transport` |
-| The host has no gRPC setup | `z_event_grpc::serve_standalone(source, addr, ServerTls)` and `Client::connect(url, ClientTls)` |
+| The host has no gRPC setup | `z_event_grpc::serve_standalone(source, identity, addr, tls)` (or `serve_standalone_with_shutdown` on a bound listener) and `Client::connect(url, tls)` |
 | A non-Rust consumer | generate a client from `proto/zevent/v1/feed.proto` |
 
 ```rust
@@ -529,13 +529,21 @@ Subscriber::builder(store, z_event_grpc::Client::new(channel), InvoiceHandler)
     .spawn();
 ```
 
-- **Peer identity.** The `PeerIdentity` trait lives in this adapter, because it depends on the request type; it yields the core's `PeerId`. The default `MtlsIdentity` reads the client certificate subject (CN or a SAN). Hosts may override it, e.g. with a signed token in request metadata.
-- **Code generation** (decided in ZE1, built in ZE4): `tonic-build` with `protox` at build time, so no system `protoc` is needed.
-- **Errors map to gRPC status codes:**
-  - `PERMISSION_DENIED`: the identity doesn't match, or the ACL refuses;
-  - `FAILED_PRECONDITION`: epoch mismatch, or a start below the retention window;
-  - `UNAVAILABLE`: the store is unreachable; the Subscriber retries.
-- **Keep-alive.** HTTP/2 keep-alive plus `Checkpoint` heartbeats every 15 s.
+- **Peer identity.** The `PeerIdentity` trait lives in this adapter, because it depends on the request type; it yields the core's `PeerId`. The adapter ships three implementations:
+  - `MtlsIdentity`, the client certificate: its subject CN, or the first DNS SAN (`MtlsIdentity::dns_san()`). Behind the `tls` feature, on by default.
+  - `TokenIdentity`: `authorization: Bearer <token>`, with tokens mapped to peers. The client sends the token with `Client::bearer_token(..)`.
+  - `MetadataIdentity`: a header taken as is. Only for tests, or behind an authenticating proxy.
+  Hosts can implement the trait themselves, e.g. for signed tokens.
+- **Client.** `Client` sends optional metadata with every call (`with_metadata`, `bearer_token`). It talks to the one producer its channel points at; the `producer` argument of `Transport` is not sent.
+- **Code generation:** `tonic-prost-build` with `protox` in `build.rs`, so no system `protoc` is needed and nothing generated is committed.
+- **Errors map to gRPC status codes.** Details travel in metadata (`zevent-producer-epoch`, `zevent-purged-through`, …), so the client rebuilds the exact error:
+  - `PERMISSION_DENIED` (`UNAUTHENTICATED` from an identity) for an identity mismatch or an ACL refusal. Not retried.
+  - `FAILED_PRECONDITION` for an epoch mismatch. Not retried.
+  - `OUT_OF_RANGE` for a start below the retention window. Not retried.
+  - `INVALID_ARGUMENT` for a malformed request; `UNIMPLEMENTED` when snapshots are not configured. Not retried.
+  - `UNAVAILABLE`, or any other code, when the store or the network failed. The subscriber retries.
+- **Keep-alive.** HTTP/2 keep-alive (30 s interval, 10 s timeout) in the standalone helpers and `Client::connect`, plus `Checkpoint` heartbeats every 15 s.
+- **Tested** with the transport suite over real HTTP/2 on localhost, and with connection cuts through a TCP proxy. Further tests cover mutual TLS with generated certificates, bearer tokens on a host-built server, and commit → applied latency (p95 well under 100 ms). `examples/split` runs orders and billing as two processes on PostgreSQL.
 
 ```proto
 // adapters/grpc/proto/zevent/v1/feed.proto
