@@ -4,9 +4,27 @@
 use crate::types::{Epoch, PeerId, Seq};
 
 /// A boxed, thread-safe error.
+///
+/// ```
+/// use z_event::BoxError;
+/// let e: BoxError = "something failed".into();
+/// assert_eq!(e.to_string(), "something failed");
+/// ```
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// What a [`Handler`](crate::Handler) returns when it cannot apply an event.
+///
+/// ```
+/// use z_event::{Event, HandlerError};
+///
+/// fn parse(ev: &Event) -> Result<serde_json::Value, HandlerError> {
+///     // A payload that does not parse never will: park it at once.
+///     ev.json().map_err(HandlerError::permanent)
+/// }
+///
+/// let timeout = HandlerError::transient(std::io::Error::other("db timeout"));
+/// assert!(!timeout.is_permanent());
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum HandlerError {
     /// Might succeed on retry (timeout, lock conflict, a dependency is down).
@@ -37,6 +55,13 @@ impl HandlerError {
 
 /// Why a producer's [`FeedSource`](crate::FeedSource) refused or ended a
 /// stream.
+///
+/// ```
+/// use z_event::{FeedError, TransportError};
+/// // Transports carry feed errors to the client, which classifies them.
+/// let e: TransportError = FeedError::Unsupported("snapshots are not configured").into();
+/// assert!(!e.is_retryable());
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum FeedError {
@@ -78,6 +103,12 @@ pub enum FeedError {
 /// A client-side transport failure. The single error type of the
 /// [`Transport`](crate::Transport) port, so the subscriber can tell errors
 /// worth a reconnect from errors that must stop it.
+///
+/// ```
+/// use z_event::TransportError;
+/// assert!(TransportError::Closed.is_retryable());
+/// assert!(!TransportError::PermissionDenied("mallory".into()).is_retryable());
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum TransportError {
@@ -162,6 +193,20 @@ impl From<FeedError> for TransportError {
 
 /// Why a [`Subscriber`](crate::Subscriber) stopped, or why one of its
 /// administrative calls failed.
+///
+/// ```
+/// use z_event::{SubscriberError, SubscriberHandle};
+///
+/// async fn supervise(handle: SubscriberHandle) {
+///     match handle.join().await {
+///         Ok(()) => {}
+///         Err(SubscriberError::EpochMismatch { .. }) => {
+///             // The producer was restored from a backup: rebuild from a snapshot.
+///         }
+///         Err(e) => eprintln!("subscriber stopped: {e}"),
+///     }
+/// }
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SubscriberError {

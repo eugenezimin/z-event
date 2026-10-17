@@ -3,6 +3,15 @@
 use std::time::Duration;
 
 /// Exponential backoff with optional jitter.
+///
+/// ```
+/// use std::time::Duration;
+/// use z_event::Backoff;
+/// let b = Backoff { jitter: false, ..Backoff::new(Duration::from_millis(100), Duration::from_secs(2)) };
+/// assert_eq!(b.delay(1), Duration::from_millis(100));
+/// assert_eq!(b.delay(3), Duration::from_millis(400));
+/// assert_eq!(b.delay(20), Duration::from_secs(2));
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Backoff {
     /// Delay before the first retry.
@@ -52,6 +61,13 @@ impl Backoff {
 }
 
 /// How often a failing handler is retried before its event is parked.
+///
+/// ```
+/// use z_event::RetryPolicy;
+/// // Park after the third failed attempt instead of the fifth.
+/// let policy = RetryPolicy { max_attempts: 3, ..RetryPolicy::default() };
+/// assert_eq!(policy.max_attempts, 3);
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct RetryPolicy {
     /// Attempts in total, including the first (default 5).

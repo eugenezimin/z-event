@@ -14,6 +14,15 @@ pub const EFFECT: &str = "Effect";
 /// effect is therefore atomic with the cursor, and the suite can count
 /// effects through the ports alone. The effect's aggregate is
 /// `effect/<source seq>`.
+///
+/// ```
+/// use z_event::OutboxStore;
+/// use z_event_testkit::handlers::EffectHandler;
+///
+/// fn recorder<S: OutboxStore + Clone>(consumer_store: &S) -> EffectHandler<S> {
+///     EffectHandler::new(consumer_store.clone())
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct EffectHandler<S> {
     store: S,
@@ -40,6 +49,17 @@ impl<S: OutboxStore> Handler<S> for EffectHandler<S> {
 
 /// Fails (permanently or transiently) for the aggregates in a shared set,
 /// otherwise delegates.
+///
+/// ```
+/// use z_event::OutboxStore;
+/// use z_event_testkit::handlers::{EffectHandler, PoisonHandler};
+///
+/// fn poisoned<S: OutboxStore + Clone>(store: S) -> PoisonHandler<EffectHandler<S>> {
+///     let handler = PoisonHandler::permanent(EffectHandler::new(store));
+///     handler.poison("orders/o1"); // heal() later, then replay
+///     handler
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct PoisonHandler<H> {
     inner: H,
@@ -96,6 +116,16 @@ impl<S: Store, H: Handler<S>> Handler<S> for PoisonHandler<H> {
 }
 
 /// Sleeps before delegating: a slow consumer.
+///
+/// ```
+/// use std::time::Duration;
+/// use z_event::{Handler, Store};
+/// use z_event_testkit::handlers::SlowHandler;
+///
+/// fn slow<S: Store, H: Handler<S>>(handler: H) -> SlowHandler<H> {
+///     SlowHandler::new(handler, Duration::from_millis(10))
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct SlowHandler<H> {
     inner: H,

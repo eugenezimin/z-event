@@ -19,10 +19,43 @@ use crate::types::{
 };
 
 /// A stream of feed messages, as produced by a [`FeedSource`].
+///
+/// ```
+/// use futures::StreamExt;
+/// use z_event::{FeedMessage, FeedStream};
+///
+/// async fn count_events(mut stream: FeedStream) -> usize {
+///     let mut n = 0;
+///     while let Some(Ok(FeedMessage::Event(_))) = stream.next().await {
+///         n += 1;
+///     }
+///     n
+/// }
+/// ```
 pub type FeedStream = BoxStream<'static, Result<FeedMessage, FeedError>>;
 
 /// Serves one producer's feed: identity, ACL and epoch checks, then the
 /// backlog, then live push. Cheap to clone.
+///
+/// ```
+/// use futures::StreamExt;
+/// use z_event::{Ack, FeedError, FeedSource, OutboxStore, PeerId, Seq, Start};
+///
+/// /// The core of a transport's server side: authenticate, open, forward.
+/// async fn serve<S: OutboxStore>(source: FeedSource<S>, peer: PeerId, from: u64) -> Result<(), FeedError> {
+///     let start = Start {
+///         consumer: peer.as_str().to_owned(),
+///         from_seq: Seq(from),
+///         epoch: None,
+///         types: vec![],
+///     };
+///     let mut stream = source.open(&peer, start).await?;
+///     while let Some(message) = stream.next().await {
+///         let _message = message?; // … encode onto the wire …
+///     }
+///     source.on_ack(&peer, Ack { applied_seq: Seq(from) }).await
+/// }
+/// ```
 pub struct FeedSource<S: OutboxStore> {
     producer: Arc<ProducerInner<S>>,
     acl: Arc<dyn Acl>,

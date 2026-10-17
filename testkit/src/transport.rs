@@ -22,6 +22,29 @@ use crate::handlers::SlowHandler;
 use crate::util::{CONSUMER, PRODUCER, World, assert_exactly_once, expect_stop, rng, wait_until};
 
 /// Serves feed sources over a transport, for the suite.
+///
+/// ```
+/// use std::any::Any;
+/// use z_event::{FeedSource, InProcess, OutboxStore, PeerId};
+/// use z_event_testkit::TransportHarness;
+///
+/// /// A harness serves a feed source and returns a client for a peer. A
+/// /// network transport would start a server here and drop it with the guard.
+/// struct Loopback;
+/// impl TransportHarness for Loopback {
+///     type Client = InProcess;
+///     async fn serve<S: OutboxStore>(
+///         &self,
+///         producer: &str,
+///         source: FeedSource<S>,
+///         peer: PeerId,
+///     ) -> (InProcess, Box<dyn Any + Send>) {
+///         let transport = InProcess::new();
+///         transport.register(producer, source);
+///         (transport.as_peer(peer), Box::new(()))
+///     }
+/// }
+/// ```
 pub trait TransportHarness: Send + Sync + 'static {
     /// The transport's client.
     type Client: Transport + Clone;
@@ -38,6 +61,14 @@ pub trait TransportHarness: Send + Sync + 'static {
 }
 
 /// Runs the suite over the core's [`InProcess`] transport.
+///
+/// ```ignore
+/// // In a storage adapter's tests: run the transport suite over the core transport.
+/// z_event_testkit::transport_suite!(
+///     || async { MyStore::fresh().await },
+///     z_event_testkit::InProcessHarness
+/// );
+/// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InProcessHarness;
 

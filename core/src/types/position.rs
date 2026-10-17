@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 ///
 /// Assigned by the sequencer, never by the writer: gapless (1, 2, 3, …) and in
 /// commit order within one [`Epoch`]. `Seq(0)` means "before the first event".
+///
+/// ```
+/// use z_event::Seq;
+/// let s = Seq(41);
+/// assert_eq!(s.next(), Seq(42));
+/// assert!(Seq::ZERO < s);
+/// ```
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -47,6 +54,13 @@ impl From<u64> for Seq {
 /// The epoch changes when the producer's storage is restored from a backup
 /// (explicitly, or when a consumer turns out to be ahead of the head), so a
 /// consumer never silently continues on a feed that went back in time.
+///
+/// ```
+/// use z_event::Epoch;
+/// let e = Epoch::generate();
+/// assert_eq!(Epoch::new(e.as_str()), Some(e.clone()));
+/// assert_eq!(Epoch::new(""), None); // "no epoch yet" on the wire
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Epoch(String);
@@ -78,6 +92,13 @@ impl fmt::Display for Epoch {
 
 /// A consumer's position in one producer's feed: the last applied `seq` and
 /// the epoch it belongs to (`None` before the first subscribe).
+///
+/// ```
+/// use z_event::{Cursor, Epoch, Seq};
+/// let c = Cursor::start().with_epoch(Epoch::new("e1").unwrap()).next(Seq(7));
+/// assert_eq!(c.seq, Seq(7));
+/// assert_eq!(c.epoch.unwrap().as_str(), "e1");
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Cursor {
     /// Last applied (or skipped) position.
@@ -115,6 +136,12 @@ impl Cursor {
 /// Identifies one subscription's cursor and dead letters: which consumer
 /// reads which producer. One service may run several consumers against the
 /// same producer, each with its own position.
+///
+/// ```
+/// use z_event::CursorKey;
+/// let key = CursorKey::new("billing", "orders");
+/// assert_eq!(key.to_string(), "billing<-orders");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CursorKey {
     /// The consumer name (as authenticated by the transport).
@@ -140,6 +167,13 @@ impl fmt::Display for CursorKey {
 }
 
 /// The current end of a producer's feed.
+///
+/// ```
+/// use z_event::{Epoch, FeedHead, Seq};
+/// let head = FeedHead { seq: Seq(10), epoch: Epoch::generate(), purged_through: Seq(4) };
+/// // A consumer at seq 3 can no longer continue from the feed.
+/// assert!(Seq(3) < head.purged_through);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedHead {
     /// The highest sequenced position (`Seq::ZERO` for an empty feed).

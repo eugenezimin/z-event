@@ -6,6 +6,23 @@ use crate::types::PeerId;
 
 /// Answers "may this peer read events of this type?". The host decides the
 /// policy; the feed enforces it.
+///
+/// ```
+/// use z_event::{Acl, PeerId};
+///
+/// /// Only `audit` may read events that carry personal data.
+/// struct PersonalData;
+/// impl Acl for PersonalData {
+///     fn allows(&self, peer: &PeerId, event_type: &str) -> bool {
+///         !event_type.starts_with("Customer") || peer.as_str() == "audit"
+///     }
+/// }
+/// assert!(!PersonalData.allows(&PeerId::from("billing"), "CustomerCreated"));
+///
+/// // Closures are ACLs too.
+/// let only_billing = |peer: &PeerId, _: &str| peer.as_str() == "billing";
+/// assert!(only_billing.allows(&PeerId::from("billing"), "OrderConfirmed"));
+/// ```
 pub trait Acl: Send + Sync + 'static {
     /// Whether `peer` may read `event_type`.
     fn allows(&self, peer: &PeerId, event_type: &str) -> bool;
@@ -21,6 +38,11 @@ where
 }
 
 /// Allows everything. For development and tests only.
+///
+/// ```
+/// use z_event::{Acl, AllowAll, PeerId};
+/// assert!(AllowAll.allows(&PeerId::from("anyone"), "Anything"));
+/// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AllowAll;
 

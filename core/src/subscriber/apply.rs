@@ -14,6 +14,18 @@ use crate::telemetry;
 use crate::types::{DeadLetter, Event, ParkedFilter, Seq};
 
 /// Result of [`Subscriber::replay_parked`](crate::Subscriber::replay_parked).
+///
+/// ```
+/// use z_event::{CursorStore, Handler, ParkedFilter, Subscriber, SubscriberError, Transport};
+///
+/// async fn replay<S: CursorStore, T: Transport, H: Handler<S>>(
+///     sub: &Subscriber<S, T, H>,
+/// ) -> Result<(), SubscriberError> {
+///     let report = sub.replay_parked(ParkedFilter::unresolved().aggregate("orders/o17")).await?;
+///     println!("replayed {}, still blocked: {:?}", report.replayed, report.blocked_aggregates);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReplayReport {
     /// Events applied and resolved.
