@@ -18,7 +18,7 @@ use z_event::{
 
 use crate::factory::StoreFactory;
 use crate::faults::{FlakyTransport, StreamCutter};
-use crate::handlers::SlowHandler;
+use crate::handlers::{FixedSnapshot, SlowHandler};
 use crate::util::{CONSUMER, PRODUCER, World, assert_exactly_once, expect_stop, rng, wait_until};
 
 /// Serves feed sources over a transport, for the suite.
@@ -361,6 +361,35 @@ pub async fn head_and_snapshot<F: StoreFactory, T: TransportHarness>(f: &F, t: &
     w.shutdown().await;
 }
 
+/// A new consumer bootstraps from the producer's snapshot through the
+/// transport, then continues live from the snapshot's position.
+pub async fn bootstrap_over_transport<F: StoreFactory, T: TransportHarness>(f: &F, t: &T) {
+    let w = World::new(f).await;
+    w.append_n(10, "OrderConfirmed", "orders").await;
+    w.wait_head(10).await;
+    let aggregates: Vec<String> = (0..10).map(|i| format!("orders/{i}")).collect();
+    let source = w
+        .producer
+        .feed_source(AllowAll)
+        .with_snapshotter(FixedSnapshot::new(aggregates.clone()));
+    let (client, _guard) = t.serve(PRODUCER, source, PeerId::from(CONSUMER)).await;
+    let sub = w
+        .subscriber(client, w.effect_handler())
+        .bootstrap_from_snapshot(["orders"])
+        .spawn();
+    w.wait_cursor(10).await;
+    w.append_n(5, "OrderConfirmed", "live").await;
+    w.wait_cursor(15).await;
+    sub.shutdown().await.unwrap();
+    let mut snapshot = crate::util::snapshot_effects(&w.billing).await;
+    snapshot.sort();
+    let mut expected = aggregates;
+    expected.sort();
+    assert_eq!(snapshot, expected);
+    assert_exactly_once(&w.effects().await, 11..=15);
+    w.shutdown().await;
+}
+
 /// Names of every transport case, in the order [`run_all`] runs them.
 pub const CASES: &[&str] = &[
     "network_drop_loop",
@@ -372,6 +401,7 @@ pub const CASES: &[&str] = &[
     "acks_reach_producer",
     "ordered_delivery",
     "head_and_snapshot",
+    "bootstrap_over_transport",
 ];
 
 /// Runs every transport case. Needs a multi-threaded tokio runtime.
@@ -386,4 +416,5 @@ pub async fn run_all<F: StoreFactory, T: TransportHarness>(stores: F, harness: T
     acks_reach_producer(f, t).await;
     ordered_delivery(f, t).await;
     head_and_snapshot(f, t).await;
+    bootstrap_over_transport(f, t).await;
 }

@@ -133,18 +133,28 @@ pub async fn read_all<S: OutboxStore>(
 }
 
 /// Source positions of the effects recorded by [`EffectHandler`] in
-/// `store`, in the order they were committed.
+/// `store`, in the order they were committed (snapshot events excluded).
 pub async fn effects<S: OutboxStore>(store: &S) -> Vec<u64> {
     drain_sequencer(store).await;
     read_all(store, Seq::ZERO, &TypeFilter::only([EFFECT]))
         .await
         .iter()
-        .map(|e| {
+        .filter_map(|e| {
             e.aggregate
                 .strip_prefix("effect/")
                 .and_then(|s| s.parse().ok())
-                .unwrap()
         })
+        .collect()
+}
+
+/// Aggregates of the snapshot events applied through [`EffectHandler`],
+/// in the order they were committed.
+pub async fn snapshot_effects<S: OutboxStore>(store: &S) -> Vec<String> {
+    drain_sequencer(store).await;
+    read_all(store, Seq::ZERO, &TypeFilter::only([EFFECT]))
+        .await
+        .iter()
+        .filter_map(|e| e.aggregate.strip_prefix("snapshot/").map(str::to_owned))
         .collect()
 }
 
