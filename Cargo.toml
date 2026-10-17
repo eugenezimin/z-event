@@ -5,6 +5,7 @@ members = [
     "adapters/memory",
     "adapters/postgres",
     "adapters/grpc",
+    "cli",
     "testkit",
     "examples/in-process",
     "examples/split",
@@ -51,6 +52,7 @@ protox      = "0.10"
 tokio-stream = { version = "0.1", default-features = false }
 x509-parser = "0.18"
 rcgen       = "0.14"
+clap        = { version = "4", features = ["derive", "env"] }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [workspace.lints.rust]

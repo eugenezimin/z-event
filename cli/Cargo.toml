@@ -1,0 +1,30 @@
+[package]
+name = "z-event-cli"
+description = "Operations CLI for z-event: feed head, consumers, parked events, cursors and epochs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "z-event-cli"
+path = "src/main.rs"
+
+[dependencies]
+z-event          = { workspace = true }
+z-event-postgres = { workspace = true }
+clap             = { workspace = true }
+sqlx             = { workspace = true }
+thiserror        = { workspace = true }
+time             = { workspace = true }
+tokio            = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+testcontainers-modules = { workspace = true }
+tokio                  = { workspace = true, features = ["rt-multi-thread", "macros", "process", "time"] }
+
+[lints]
+workspace = true
