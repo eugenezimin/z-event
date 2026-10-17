@@ -17,7 +17,13 @@ adheres to [Semantic Versioning](https://semver.org/).
   reconnect with backoff, acks), the `InProcess` transport, metrics and
   tracing.
 - `z-event-memory`: the in-memory reference storage adapter.
-- `z-event-testkit`: storage (24 cases) and transport (9 cases) conformance
+- `z-event-testkit`: storage (26 cases) and transport (9 cases) conformance
   suites, fault injectors, and the `storage_suite!` / `transport_suite!`
   macros.
 - `examples/in-process`: orders to billing in one process.
+- Tests for batched apply, the retention task, `InProcess` re-registration,
+  and every documented metric; rustdoc examples on all public types and
+  traits.
+- DESIGN: a review of the ports against a MongoDB adapter. It found one
+  Postgres-shaped assumption (blocking cursor locks), recorded as a ZE3
+  prerequisite.
