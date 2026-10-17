@@ -114,7 +114,7 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 - The transport suite passes over real HTTP/2. Delivery is exactly once through a TCP proxy that cuts connections. Mutual TLS (generated CA and certificates) and bearer tokens on a host-built server are tested. Commit → applied p95 is under 1 ms locally, against the 100 ms target.
 - `examples/split` runs orders and billing as two OS processes on PostgreSQL. Its test spawns both binaries against a container.
 
-### ZE5. Snapshots, epochs, retention operations, CLI. Size: M (1 week)
+### ZE5. Snapshots, epochs, retention operations, CLI. Size: M (1 week). ✅ Done
 
 **Tasks:**
 1. `Snapshot` end-to-end: the host's `Snapshotter` runs in a consistent read (`REPEATABLE READ` in Postgres) → `*Snapshot` events → `Checkpoint(S)`; the Subscriber's bootstrap mode is "snapshot then subscribe from S".
@@ -123,6 +123,12 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 4. Docs: an "operating z-event" guide (alerts, runbooks) and a "writing an adapter" guide.
 
 **Done when:** a new consumer bootstraps beyond the retention window, a restored producer is detected, and every CLI command has an integration test.
+
+**Outcome of ZE5:**
+- Snapshot bootstrap in the subscriber: `bootstrap_from_snapshot` for new consumers and for cursors below retention, plus `Subscriber::bootstrap`. Snapshots read through `Store::begin_snapshot` (PostgreSQL: `REPEATABLE READ READ ONLY`). New conformance cases cover bootstrap below retention, for a new consumer, and through a transport, on memory, PostgreSQL and gRPC.
+- Epochs: explicit rotation (`epoch rotate`) and automatic detection were already covered by `epoch_mismatch_detected`. The restore runbook is in `docs/operating.md`.
+- `z-event-cli`: `migrate`, `head`, `consumers list|remove`, `parked list|resolve|replay`, `cursor show|reset`, `epoch show|rotate`. The commands are a library over the ports. `parked replay` runs the service's handlers, so a service mounts the commands in its own binary with its `Subscriber`; the generic binary explains this. Every command has an integration test against PostgreSQL, plus a smoke test of the binary.
+- Guides: `docs/operating.md` and `docs/writing-an-adapter.md`.
 
 ---
 

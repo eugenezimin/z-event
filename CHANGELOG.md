@@ -26,6 +26,12 @@ adheres to [Semantic Versioning](https://semver.org/).
   standalone helpers, and mTLS, bearer-token and header identities.
 - `examples/split`: orders and billing as two processes on PostgreSQL and
   gRPC.
+- Snapshot bootstrap: `SubscriberBuilder::bootstrap_from_snapshot` and
+  `Subscriber::bootstrap`; `Store::begin_snapshot` for consistent snapshot
+  reads (PostgreSQL: `REPEATABLE READ READ ONLY`).
+- `z-event-cli`: head, consumers, parked events (list, resolve, replay
+  from a service's binary), cursors, epochs and migrations.
+- Guides: operating z-event, and writing an adapter.
 - `z-event-testkit`: storage (26 cases) and transport (9 cases) conformance
   suites, fault injectors, and the `storage_suite!` / `transport_suite!`
   macros.

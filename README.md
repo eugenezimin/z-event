@@ -2,7 +2,7 @@
 
 **Reliable, push-based events between services, without a message broker.** A Rust library.
 
-> Status: **0.1.0, unreleased.** The core, the in-memory adapter, the PostgreSQL adapter, the gRPC adapter and the conformance testkit are implemented. Operations features (snapshot bootstrap, CLI) are next. Read [`DESIGN.md`](DESIGN.md) for the full design and [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for the build order.
+> Status: **0.1.0, unreleased.** All crates below are implemented and tested. Read [`DESIGN.md`](DESIGN.md) for the full design and [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for the build order.
 
 ## What it does
 
@@ -28,6 +28,7 @@ At modest volume (up to hundreds of events per second per service), the database
 | `z-event-postgres` | `adapters/postgres/` | Storage adapter for PostgreSQL (sqlx): outbox, sequencer, LISTEN/NOTIFY, cursors, dead letters, embedded migrations | use it, or write your own |
 | `z-event-grpc` | `adapters/grpc/` | Transport adapter for gRPC (tonic): a feed service you **mount on your own server**, a client on **your own channel**, or turnkey standalone helpers; mTLS or bearer-token identity | use it, or write your own (e.g. HTTP/SSE) |
 | `z-event-memory` | `adapters/memory/` | In-memory storage: the reference implementation, for tests and examples | dev/test |
+| `z-event-cli` | `cli/` | Operations CLI on PostgreSQL: head, consumers, parked events, cursors, epochs, migrations. Its commands are a library, so a service can add them to its own binary (with `parked replay`) | optional |
 | `z-event-testkit` | `testkit/` | Conformance suites that every storage or transport adapter must pass | dev/test |
 
 ## Usage sketch
@@ -59,6 +60,11 @@ Subscriber::builder(store, z_event_grpc::Client::new(channel), CreateInvoice)
 Runnable examples:
 - [`examples/in-process`](examples/in-process/src/main.rs): both services in one process on the in-memory adapter. `cargo run -p z-event-example-in-process`.
 - [`examples/split`](examples/split/src/main.rs): orders and billing as two processes, on PostgreSQL and gRPC. `DATABASE_URL=… cargo run -p z-event-example-split -- orders` in one terminal and `… -- billing` in another.
+
+## Guides
+
+- [`docs/operating.md`](docs/operating.md): deployment, settings, monitoring and runbooks (stuck sequencer, parked events, restoring from a backup, new consumers).
+- [`docs/writing-an-adapter.md`](docs/writing-an-adapter.md): the port contracts and how to prove a storage or transport adapter with the conformance suites.
 
 ## Development
 

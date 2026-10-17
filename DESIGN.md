@@ -1,6 +1,6 @@
 # z-event: design
 
-> Status: the core (`z-event`), the in-memory adapter (`z-event-memory`), the PostgreSQL adapter (`z-event-postgres`), the gRPC adapter (`z-event-grpc`) and the conformance testkit (`z-event-testkit`) are implemented. Operations features (snapshot bootstrap, epoch runbook, CLI) are next. The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Port signatures in §13–§14 are final as of ZE1.
+> Status: implemented. The core (`z-event`), the in-memory adapter (`z-event-memory`), the PostgreSQL adapter (`z-event-postgres`), the gRPC adapter (`z-event-grpc`), the operations CLI (`z-event-cli`) and the conformance testkit (`z-event-testkit`) are in place. Operations are covered in [`docs/operating.md`](docs/operating.md); adapter authors start with [`docs/writing-an-adapter.md`](docs/writing-an-adapter.md). The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Port signatures in §13–§14 are final as of ZE1.
 >
 > z-event is a Rust library for **reliable, push-based, event-driven communication between services without a message broker**. A producer writes events into its own database in the same transaction as the business change (a *transactional outbox*). It then serves that outbox as an ordered feed, and consumers subscribe to it. Each consumer stores its position (cursor) in the same transaction as the effect of the event, so nothing is lost and nothing is applied twice.
 >
@@ -308,6 +308,8 @@ Parked events live in the **consumer's** storage, through `CursorStore`. Replay 
 - **A new consumer, or a rebuild beyond retention**, works in two steps:
   1. It calls `Snapshot`. The producer streams the current state of every requested aggregate as `<Type>Snapshot` events, provided by the host's `Snapshotter`, read in one consistent read, and ends with `Checkpoint(seq = S)`.
   2. The consumer subscribes from `S`. Changes committed while the snapshot was taken may arrive again after `S`, which is harmless thanks to `aggregate_version`.
+
+  A subscriber does this by itself with `SubscriberBuilder::bootstrap_from_snapshot(aggregate_types)`: when its cursor is new, and when the producer refuses its cursor as below the retention window. An operator can also run it with `Subscriber::bootstrap(aggregate_types)`. The snapshot events are applied in their own transactions, then the cursor moves to `S` with the feed's epoch. A bootstrap that is interrupted and run again is harmless if the handler honours `aggregate_version`. Snapshot events all carry `seq = S`, so they cannot be parked: a snapshot event that keeps failing stops the subscriber.
 - **Epochs.** Every feed has an `epoch` id, stored by the producer. A consumer's cursor records the epoch it belongs to. The producer refuses a `Start` whose epoch differs from its own, and the Subscriber stops with an alert. Epochs change:
   - **explicitly**, when an operator restores the producer's storage from a backup and runs `z-event-cli epoch rotate` (part of the restore runbook);
   - **automatically**, when a consumer's `from_seq` is **ahead** of the producer's head **in the producer's current epoch**: a sure sign the producer went back in time. The producer rotates the epoch and rejects the stream. A consumer with no epoch yet that is ahead of the head is rejected without rotating (nothing proves the feed went back).
@@ -334,6 +336,8 @@ pub trait Store: Send + Sync + 'static {
     fn begin(&self) -> impl Future<Output = Result<Self::Tx, Self::Error>> + Send;
     fn commit(&self, tx: Self::Tx) -> impl Future<Output = Result<(), Self::Error>> + Send;
     fn rollback(&self, tx: Self::Tx) -> impl Future<Output = Result<(), Self::Error>> + Send; // default: drop
+    /// A read-only transaction with one consistent view, for snapshots. Default: begin().
+    fn begin_snapshot(&self) -> impl Future<Output = Result<Self::Tx, Self::Error>> + Send;
 }
 
 /// Producer side. Written with `async fn` for brevity; the trait declares `impl Future + Send`.
@@ -462,7 +466,7 @@ pub struct Subscription {
 
 **Server side**, core provides `FeedSource<S: OutboxStore>` (from `Producer::feed_source(acl)`):
 - `open(peer: &PeerId, start: Start) -> Result<FeedStream, FeedError>` does, in order: the identity check (`start.consumer == peer`), the ACL check for explicitly requested types, the epoch check (§11), the retention check, and registers the consumer. The stream is pull-based (the transport's flow control is the backpressure; dropping it cancels it): the opening checkpoint, the backlog in batches (default 500) with skip checkpoints, then live push, with heartbeats every 15 s when idle.
-- `on_ack(peer, ack)`, `head()`, and `snapshot(peer, request)`: the host's `Snapshotter` (set with `with_snapshotter`) produces `*Snapshot` events, read in one transaction begun after the head `S` was read; they carry `seq = S` and end with `Checkpoint(S)`.
+- `on_ack(peer, ack)`, `head()`, and `snapshot(peer, request)`: the host's `Snapshotter` (set with `with_snapshotter`) produces `*Snapshot` events, read in one consistent read-only transaction (`Store::begin_snapshot`) begun after the head `S` was read; they carry `seq = S` and end with `Checkpoint(S)`.
 
 A transport adapter only maps its wire format to these calls. That is why a new transport (HTTP/SSE, WebSocket, a broker relay) is small.
 
@@ -609,8 +613,8 @@ message HeadResponse { uint64 head = 1; string epoch = 2; uint64 purged_through 
 
    | Suite | Checks |
    |---|---|
-   | `storage` (26 cases) | the sequencing contract: commit-order gap (50 concurrent transactions with random commit delays, some held open, some rolled back, a live reader), gapless and immutable `seq`, only committed events sequenced; read contract and envelope round trip; exclusive leases and cursor locks; parking visibility; purge respects acks and keeps the head; epochs and notifications; consumer outage (exactly once); duplicates after reconnect skipped; concurrent subscribers of one consumer; batched apply (exactly once; a failure inside a batch falls back to one event at a time); crash mid-apply ×1000 (a handler that hangs at planned points, a store that crashes right before or after its N-th operation, and random aborts: effect and cursor never diverge); sequencer failover (crash < 5 s, graceful < 2 s, no gaps); poison and transient failures → park → per-aggregate blocking → replay; filtered checkpoints; epoch mismatch (three variants); retention boundary; cursor reset |
-   | `transport` (9 cases) | network drops in a loop (no loss, no duplicate effects); identity and ACL enforced; backpressure with a slow consumer; heartbeats; reconnect with exponential backoff and jitter; acks reach the producer; ordered delivery and checkpoint promise; head and snapshot |
+   | `storage` (28 cases) | the sequencing contract: commit-order gap (50 concurrent transactions with random commit delays, some held open, some rolled back, a live reader), gapless and immutable `seq`, only committed events sequenced; read contract and envelope round trip; exclusive leases and cursor locks; parking visibility; purge respects acks and keeps the head; epochs and notifications; consumer outage (exactly once); duplicates after reconnect skipped; concurrent subscribers of one consumer; batched apply (exactly once; a failure inside a batch falls back to one event at a time); crash mid-apply ×1000 (a handler that hangs at planned points, a store that crashes right before or after its N-th operation, and random aborts: effect and cursor never diverge); sequencer failover (crash < 5 s, graceful < 2 s, no gaps); poison and transient failures → park → per-aggregate blocking → replay; filtered checkpoints; epoch mismatch (three variants); retention boundary; cursor reset; snapshot bootstrap (below retention, and for a new consumer) |
+   | `transport` (10 cases) | network drops in a loop (no loss, no duplicate effects); identity and ACL enforced; backpressure with a slow consumer; heartbeats; reconnect with exponential backoff and jitter; acks reach the producer; ordered delivery and checkpoint promise; head and snapshot; bootstrap through the transport |
 
 ## 18. Security and observability hooks
 
