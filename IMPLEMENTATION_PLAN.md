@@ -1,142 +1,86 @@
-# z-event: implementation plan
+# z-event build plan and status
 
-> The design is in [`DESIGN.md`](DESIGN.md). This document is the build order.
->
-> Principle: **prove the ports are database-agnostic before touching a real database.** The core and the in-memory adapter must pass the conformance suite first (ZE2). Only then do Postgres (ZE3) and gRPC (ZE4) arrive, and they must pass the same suite.
+This document records how z-event was built, in which order and why, and what remains to be done. The architecture is described in [DESIGN.md](DESIGN.md).
 
-## 0. Definition of Done (every milestone)
+## Approach
 
-1. `cargo fmt`, `clippy -D warnings`, `cargo deny` and `cargo nextest` are green in CI.
-2. `core` has no dependency on any adapter, database driver or gRPC crate. A CI check fails if `cargo tree -p z-event` contains `sqlx`, `tonic`, `prost` or any `z-event-*` crate.
-3. Public APIs have rustdoc with an example. Breaking changes are listed in `CHANGELOG.md`.
-4. Every storage or transport adapter runs the full `z-event-testkit` suite in its own tests.
+The guiding rule was to prove that the core is independent of any database before touching a real one. The core and the in-memory adapter had to pass the full conformance suite first. Only then did the PostgreSQL and gRPC adapters arrive, and they had to pass the same suite unchanged.
 
-## 1. Dependency graph
-
-```
-ZE1 skeleton + core types/ports ──> ZE2 core runtime + memory adapter + testkit ──┬─> ZE3 postgres adapter ──┬─> ZE5 snapshot, epochs, retention, CLI
-                                                                                   └─> ZE4 grpc adapter ──────┘
+```mermaid
+flowchart LR
+    M1["1. workspace, core types and ports"] --> M2["2. core runtime, memory adapter, conformance suites"]
+    M2 --> M3["3. PostgreSQL adapter"]
+    M2 --> M4["4. gRPC adapter"]
+    M3 --> M5["5. snapshots, epochs, CLI, guides"]
+    M4 --> M5
 ```
 
-ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4** to run split services. ZE5 completes operations features.
+Every milestone had the same definition of done. Formatting, clippy with warnings as errors, cargo-deny and the tests pass in CI. The core depends on no adapter, database driver or gRPC library, which a script checks. Public types carry documentation with an example, and every adapter runs the full conformance suite in its own tests.
 
----
+## Milestones
 
-### ZE1. Workspace skeleton, core types and ports. Size: S (3–4 days). ✅ Done
+All five milestones are complete. The internal code of each milestone, written as ZE1 to ZE5, appears in the history of this file and in older discussions.
 
-**Tasks:**
-1. Run `git init`. Create a Cargo workspace with members `core`, `adapters/memory`, `testkit` and `examples`; `adapters/postgres` and `adapters/grpc` are created in ZE3 and ZE4. Add `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`, `CHANGELOG.md`, and choose a licence (MIT OR Apache-2.0).
-2. CI: fmt, clippy, deny, nextest, plus the "core has no adapter dependencies" check.
-3. `core` types:
-   - `Event`, `NewEvent` (builder: `json(type, aggregate, aggregate_version, &payload)`, `.correlation()`, `.header()`), `Seq`, `Epoch`, `Cursor`, `FeedHead`, `TypeFilter`, `DeadLetter`;
-   - the protocol messages `Start`, `Ack`, `Checkpoint`, `FeedMessage`, `SnapshotRequest`.
-4. `core` ports: `Store`, `OutboxStore`, `CursorStore`, `Handler`, `HandlerError`, `Transport`, `Subscription`, `Acl` (+ `AllowAll`), `PeerIdentity`, `Snapshotter` (DESIGN §13–§14).
+### 1. Workspace, core types and ports
 
-**Done when:** the workspace builds and CI is green. The port traits compile with a dummy implementation in a doc test.
+The Cargo workspace, CI, licences and tooling were set up first. The core received its data types, the envelope, positions, filters, parked events and the protocol messages, and the traits for storage, handlers, transport, access control and snapshots.
 
-### ZE2. Core runtime, in-memory adapter and the conformance testkit. Size: M (1.5–2 weeks). ★ The critical milestone. ✅ Done
+The traits use native async methods declared as `impl Future + Send`, so implementors write plain `async fn` and the runtime can spawn the futures on a multi-threaded executor. A documentation test implements every trait with a dummy store to prove that this works.
 
-**Tasks:**
-1. **`Producer`:**
-   - `append` (delegates to the store);
-   - the sequencer task: acquire the lease → loop `sequence_batch` on `Appended` notifications plus a 1-second safety timer → release on shutdown;
-   - the retention job;
-   - `feed_source()`.
-2. **`FeedSource`:** identity, ACL and epoch checks; backlog in batches of 500; live push on `Sequenced` notifications; `Checkpoint` after filtered ranges and every 15 s while idle; `on_ack` → `store.ack`; automatic epoch rotation when `from_seq > head`.
-3. **`Subscriber`:**
-   - builder (`consumer`, `producer`, `types`, retry policy, batch size);
-   - reconnect with exponential backoff + jitter;
-   - `seq <= cursor` dedup; effect + cursor in one transaction; periodic `Ack`;
-   - transient retry → park per aggregate; events behind a parked aggregate are parked too;
-   - `replay_parked(filter)`, `reset_cursor`;
-   - epoch mismatch → stop + alert metric.
-4. **`InProcess` transport** in core.
-5. **Metrics and tracing** (DESIGN §18).
-6. **`z-event-memory`:** `Tx` = a staged change set applied atomically on commit; true concurrent transactions, so the commit-order-gap test means something; a lease with expiry.
-7. **`z-event-testkit`:**
-   - `storage::run_all(factory)` and `transport::run_all(factory)`, with every case from DESIGN §17;
-   - fault injectors: a `Handler` wrapper that kills before or after commit at random points, and a stream cutter.
-8. `examples/in-process`: orders → billing in one process with the memory adapter.
+### 2. Core runtime, memory adapter and conformance suites
 
-**Done when:** `z-event-memory` + `InProcess` pass both conformance suites in CI, 0 lost and 0 duplicated effects.
+This was the critical milestone. The core gained the producer with its sequencer and retention job, the feed source with backlog, checkpoints, live push and heartbeats, the subscriber with exactly-once application, retries, parking, replay and reconnects, and the in-process transport, metrics and tracing.
 
-**Outcome of ZE1–ZE2:**
-- Port signatures are final (DESIGN §13–§14). Decisions made while building them are recorded in DESIGN: cursors keyed by (consumer, producer), a single `TransportError`, the opening checkpoint that carries the epoch, lease fencing and renewal, `purged_through` with `BeyondRetention`, notifications as hints.
-- `z-event-memory` with the in-process transport passes both suites: 26 storage cases and 9 transport cases. The suites were checked against seeded bugs (no dedup, effect and cursor in separate transactions, skipped backlog events, sequencing uncommitted appends, and three bugs in batched apply); each makes at least one case fail.
-- Gaps closed at the end of ZE2:
-  - batched apply is tested, including inside the crash test;
-  - the retention task and `InProcess` re-registration are tested;
-  - a metrics test checks every documented `feed_*` metric and its labels;
-  - every public type and trait has a rustdoc example;
-  - `cargo nextest` (CI profile), `cargo deny` and `actionlint` pass locally.
-- `PeerIdentity` moved to the transport adapters (core keeps `PeerId`); `z-event-grpc` defines it in ZE4.
+The in-memory adapter stages writes in each transaction and applies them atomically on commit, with insert ids taken at append time, so the commit-order gap exists in memory too and the conformance tests mean something.
 
-### ZE3. Postgres adapter (`z-event-postgres`). Size: M (1–1.5 weeks). ✅ Done
+The conformance suites were then written and checked against deliberately planted bugs. Removing the duplicate check, committing effect and cursor separately, skipping events in full backlog batches, sequencing uncommitted rows and three different mistakes in batched application each make at least one case fail.
 
-**Tasks:**
-1. Embedded migrations with their own history table; `migrate(&pool)`; unqualified table names (works per schema via `search_path`).
-2. The `append` and `AFTER INSERT` statement trigger → `pg_notify(zevent_<schema>_appended)`.
-3. The sequencer statement (DESIGN §15) and `pg_notify(zevent_<schema>_sequenced, head)`.
-4. Advisory-lock lease on a dedicated connection; `PgListener` notifications.
-5. Cursors (`SELECT … FOR UPDATE`), dead letters, acks, purge (never deletes the head row), epoch in `feed_meta`.
-6. **Runtime-checked queries only** (no `query!` macros). Add a lint or grep check in CI.
+Several design details were settled during this milestone and recorded in DESIGN.md. Cursors are keyed by consumer and producer, the transport has a single error type, every stream opens with a checkpoint that carries the epoch, leases are fenced and renewed, and retention records a boundary so that a consumer below it is refused instead of silently skipping events.
 
-**Done when:**
-- the conformance suite passes against Postgres in testcontainers (13 and 16 at least);
-- two schemas in one database run independent feeds without cross-talk;
-- the sequencer failover test passes with two processes.
+### 3. PostgreSQL adapter
 
-**Outcome of ZE3:**
-- `z-event-postgres` on sqlx 0.8 (the same as z-auth). Statements are schema-qualified, migrations are embedded (`z_event_postgres::migrate(&pool, schema)`), and the advisory-lock lease runs on a dedicated connection that also carries the sequencer statement (fencing).
-- The storage suite (26 cases) passes on PostgreSQL 13 and 16 in testcontainers, and the transport suite passes on PostgreSQL 16. Adapter tests: two schemas in one database without cross-talk; idempotent and concurrent migrations; host writes sharing the transaction; a dropped lease freeing leadership; the notification payloads.
-- The sequencer failover case runs two producers with separate database sessions in one test process. From PostgreSQL's point of view that is the same as two processes.
-- Finding: with a networked database, a killed task's `COMMIT` can still land after the task is gone. The crash test now reads the cursor under `lock_cursor` (`World::settled`), so it compares effects and cursor only after in-flight transactions finish.
+The adapter uses sqlx 0.8, the same version as z-auth, so a host can share one transaction type between both libraries. Statements are schema-qualified, migrations are embedded, and the sequencer lease is an advisory lock on a dedicated connection that also runs the stamping statement.
 
-### ZE4. gRPC adapter (`z-event-grpc`). Size: M (1–1.5 weeks). ✅ Done
+The storage suite passes on PostgreSQL 13 and 16 in containers, and the transport suite passes on PostgreSQL 16. Separate tests cover two schemas in one database, concurrent migrations, business writes sharing the event's transaction and a dropped lease freeing leadership.
 
-**Tasks:**
-1. `proto/zevent/v1/feed.proto` (DESIGN §16); codegen via `tonic-build` + `protox` in `build.rs` at build time (decided in ZE1: no system `protoc`, nothing generated is committed).
-2. `feed_service(source, identity)`, a tonic service mountable on the host's server.
-3. `Client::new(channel)`, implementing `Transport`.
-4. Turnkey helpers: `serve_standalone(source, addr, ServerTls)` and `Client::connect(url, ClientTls)`.
-5. `MtlsIdentity` (client-cert subject/SAN) plus a metadata-token example; error → status mapping; HTTP/2 keep-alive.
-6. `examples/split`: orders and billing as two processes (postgres + grpc, mTLS with test certs).
+One finding changed the test kit. With a networked database, a task that is killed after sending `COMMIT` can still have its transaction committed afterwards. The crash test now reads the cursor under a lock, so it compares effects and cursor only after any in-flight transaction has finished.
 
-**Done when:**
-- the transport conformance suite passes over real gRPC, including the network-drop loop through a TCP fault proxy;
-- identity and ACL denial are tested;
-- the service works both mounted on an existing tonic server and standalone;
-- commit → applied latency is p95 < 100 ms in the split example.
+### 4. gRPC adapter
 
-**Outcome of ZE4:**
-- `z-event-grpc` on tonic 0.14. Code is generated with `tonic-prost-build` + `protox` (no `protoc`). It provides `feed_service` for host servers, `Client` (a `Transport`) with metadata and bearer tokens, `serve_standalone` / `serve_standalone_with_shutdown`, and `MtlsIdentity`, `TokenIdentity` and `MetadataIdentity`.
-- Errors map to status codes, with details in metadata. A start below retention uses `OUT_OF_RANGE`, so it can be told apart from an epoch mismatch.
-- The transport suite passes over real HTTP/2. Delivery is exactly once through a TCP proxy that cuts connections. Mutual TLS (generated CA and certificates) and bearer tokens on a host-built server are tested. Commit → applied p95 is under 1 ms locally, against the 100 ms target.
-- `examples/split` runs orders and billing as two OS processes on PostgreSQL. Its test spawns both binaries against a container.
+The adapter uses tonic 0.14 and generates its code with protox, so no system `protoc` is needed. It offers a feed service for a host's existing server, a client for a host's existing channel, standalone helpers, and identities based on client certificates, bearer tokens or a trusted header.
 
-### ZE5. Snapshots, epochs, retention operations, CLI. Size: M (1 week). ✅ Done
+The transport suite passes over real HTTP/2. Delivery is exactly once through a TCP proxy that keeps cutting connections, mutual TLS and bearer tokens are tested, and the commit to applied latency is below one millisecond at the 95th percentile on a laptop, against a target of 100 milliseconds. A two-process example runs `orders` and `billing` on PostgreSQL and gRPC, and its test starts both binaries.
 
-**Tasks:**
-1. `Snapshot` end-to-end: the host's `Snapshotter` runs in a consistent read (`REPEATABLE READ` in Postgres) → `*Snapshot` events → `Checkpoint(S)`; the Subscriber's bootstrap mode is "snapshot then subscribe from S".
-2. Epochs: `rotate_epoch`; a restore runbook in the docs; tests for both automatic detection and explicit rotation.
-3. `z-event-cli` (Postgres first): `head`, `consumers list|remove`, `parked list|replay|resolve`, `cursor reset`, `epoch rotate`.
-4. Docs: an "operating z-event" guide (alerts, runbooks) and a "writing an adapter" guide.
+### 5. Snapshots, epochs, CLI and guides
 
-**Done when:** a new consumer bootstraps beyond the retention window, a restored producer is detected, and every CLI command has an integration test.
+Subscribers can bootstrap from the producer's snapshot when they are new or have fallen below the retention window. Snapshots read through a consistent read-only transaction. Epoch rotation and detection were already covered, and the restore procedure is documented in the operations guide.
 
-**Outcome of ZE5:**
-- Snapshot bootstrap in the subscriber: `bootstrap_from_snapshot` for new consumers and for cursors below retention, plus `Subscriber::bootstrap`. Snapshots read through `Store::begin_snapshot` (PostgreSQL: `REPEATABLE READ READ ONLY`). New conformance cases cover bootstrap below retention, for a new consumer, and through a transport, on memory, PostgreSQL and gRPC.
-- Epochs: explicit rotation (`epoch rotate`) and automatic detection were already covered by `epoch_mismatch_detected`. The restore runbook is in `docs/operating.md`.
-- `z-event-cli`: `migrate`, `head`, `consumers list|remove`, `parked list|resolve|replay`, `cursor show|reset`, `epoch show|rotate`. The commands are a library over the ports. `parked replay` runs the service's handlers, so a service mounts the commands in its own binary with its `Subscriber`; the generic binary explains this. Every command has an integration test against PostgreSQL, plus a smoke test of the binary.
-- Guides: `docs/operating.md` and `docs/writing-an-adapter.md`.
+The `z-event-cli` tool inspects and repairs feeds, consumers, parked events, cursors and epochs. Its commands form a library, so a service can mount them in its own binary together with its subscriber, which is what replaying parked events requires.
 
----
+The operations guide and the adapter guide complete the milestone.
 
-## 2. Risks
+## Current numbers
+
+| Item | Count |
+|---|---|
+| Storage conformance cases | 28 |
+| Transport conformance cases | 10 |
+| Tests in the workspace under nextest | 97 |
+| PostgreSQL versions under test | 13 and 16 |
+
+## Risks and how they were handled
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Port design leaks Postgres assumptions | Another storage adapter is hard to write later | The memory adapter was built first and passes the full suite, so the ports carry no Postgres-only features |
-| Subtle delivery bugs: gaps, duplicates, stalls | Lost or doubled effects in host systems | Sequencer by design; conformance suite with concurrency and chaos tests on every CI build; lag and unsequenced alerts |
-| Generic traits make the API hard to use | Hosts wrap it inconsistently | Examples first; builders with defaults; one-call turnkey helpers in the gRPC adapter |
-| Async-trait ergonomics (`Send` bounds on generic futures) | Compile errors in hosts | Decided in ZE1: native async methods declared as `impl Future + Send` (implementors write `async fn`), no `async-trait`; the example and the suites run on a multi-threaded runtime |
+| The ports carry PostgreSQL assumptions | Another storage adapter would be hard to write | The memory adapter was built first and passes the full suite |
+| Subtle delivery bugs such as gaps, duplicates or stalls | Lost or doubled effects in host systems | The sequencer by design, conformance suites with concurrency and crash tests in CI, and alerts on lag and unsequenced rows |
+| Generic traits make the API hard to use | Hosts wrap it inconsistently | Examples first, builders with defaults and one-call helpers in the gRPC adapter |
+| Async traits with `Send` bounds | Compile errors in host code | Native async methods returning `impl Future + Send`, and examples and suites that run on a multi-threaded runtime |
+
+## Next steps
+
+CI currently runs only on pull requests that target `main`. Adding a run on every push to `main` would also cover changes that reach `main` through stacked pull requests.
+
+The first release would tag version 0.1.0 and move the changelog entries under that version. legal-back plans to pin z-event to a git tag from its pilot onwards.
+
+legal-back itself still has to be wired up. Its services will run the migrations in their schemas, mount the feed service on their gRPC servers, and replace direct calls between services with events.
