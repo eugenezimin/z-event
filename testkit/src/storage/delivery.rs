@@ -214,8 +214,8 @@ pub async fn crash_mid_apply<F: StoreFactory>(f: &F) {
         sub.abort_and_wait().await;
 
         // Effects and cursor must agree exactly.
-        let cursor = w.cursor().await.get();
-        let effects = w.effects().await;
+        let (cursor, effects) = w.settled().await;
+        let cursor = cursor.get();
         let new: Vec<u64> = effects[verified_effects..].to_vec();
         assert_eq!(
             new,

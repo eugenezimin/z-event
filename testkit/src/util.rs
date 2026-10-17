@@ -275,6 +275,23 @@ impl<S: OutboxStore + CursorStore + Clone> World<S> {
         self.billing.cursor(&self.key()).await.unwrap().seq
     }
 
+    /// The consumer's cursor and recorded effects, read once no apply
+    /// transaction is in flight: the cursor is taken with `lock_cursor`,
+    /// which waits for a transaction that still holds it (with a networked
+    /// database, a killed task's COMMIT can still land after the task is
+    /// gone).
+    pub async fn settled(&self) -> (Seq, Vec<u64>) {
+        let mut tx = self.billing.begin().await.unwrap();
+        let cursor = self
+            .billing
+            .lock_cursor(&mut tx, &self.key())
+            .await
+            .unwrap();
+        let effects = effects(&self.billing).await;
+        self.billing.rollback(tx).await.unwrap();
+        (cursor.seq, effects)
+    }
+
     /// Waits until the consumer's cursor reaches `seq`.
     pub async fn wait_cursor(&self, seq: u64) {
         let key = self.key();
