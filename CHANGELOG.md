@@ -17,6 +17,10 @@ adheres to [Semantic Versioning](https://semver.org/).
   reconnect with backoff, acks), the `InProcess` transport, metrics and
   tracing.
 - `z-event-memory`: the in-memory reference storage adapter.
+- `z-event-postgres`: the PostgreSQL storage adapter (sqlx 0.8). Embedded
+  migrations per schema, a sequencer under an advisory-lock lease on a
+  dedicated connection, LISTEN/NOTIFY wake-ups, locked cursors and dead
+  letters. Tested on PostgreSQL 13 and 16.
 - `z-event-testkit`: storage (26 cases) and transport (9 cases) conformance
   suites, fault injectors, and the `storage_suite!` / `transport_suite!`
   macros.

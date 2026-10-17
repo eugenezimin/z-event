@@ -1,6 +1,6 @@
 # z-event: design
 
-> Status: **ZE1 and ZE2 implemented**: the core (`z-event`), the in-memory adapter (`z-event-memory`) and the conformance testkit (`z-event-testkit`). The Postgres and gRPC adapters are planned (ZE3, ZE4). The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Port signatures in §13–§14 are final as of ZE1.
+> Status: the core (`z-event`), the in-memory adapter (`z-event-memory`), the PostgreSQL adapter (`z-event-postgres`) and the conformance testkit (`z-event-testkit`) are implemented. The gRPC adapter is next. The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Port signatures in §13–§14 are final as of ZE1.
 >
 > z-event is a Rust library for **reliable, push-based, event-driven communication between services without a message broker**. A producer writes events into its own database in the same transaction as the business change (a *transactional outbox*). It then serves that outbox as an ordered feed, and consumers subscribe to it. Each consumer stores its position (cursor) in the same transaction as the effect of the event, so nothing is lost and nothing is applied twice.
 >
@@ -78,7 +78,7 @@ z-event/
 │                           #   depends on: tokio, tokio-util, futures, serde, serde_json, bytes, thiserror,
 │                           #   tracing, metrics, ulid, time, fastrand. NO database, NO gRPC
 ├── adapters/
-│   ├── postgres/           # crate `z-event-postgres`: storage ports on PostgreSQL (sqlx)          [planned, ZE3]
+│   ├── postgres/           # crate `z-event-postgres`: storage ports on PostgreSQL (sqlx)
 │   ├── grpc/               # crate `z-event-grpc`: transport port on gRPC (tonic) + feed.proto     [planned, ZE4]
 │   └── memory/             # crate `z-event-memory`: in-memory storage (reference implementation, tests, examples)
 ├── testkit/                # crate `z-event-testkit`: conformance suites for storage and transport adapters
@@ -470,38 +470,38 @@ A transport adapter only maps its wire format to these calls. That is why a new 
 
 ## 15. Postgres adapter (`z-event-postgres`)
 
-- **Types.** `Store::Tx = sqlx::Transaction<'static, Postgres>`. The host runs its business SQL on the same transaction.
-- **Tables.** `outbox`, `feed_meta`, `feed_consumers`, `feed_cursors`, `dead_letters`, with indexes on `outbox(seq)`, a partial index `outbox(insert_id) WHERE seq IS NULL`, and `outbox(aggregate)`.
-  - They ship as **embedded migrations**: `z_event_postgres::migrate(&pool)`, with their own migration history table, so they never clash with the host's migrations.
-  - Table names are **unqualified**, so a host that keeps one schema per service runs them in each schema via `search_path`.
-- **Append** is an `INSERT … seq = NULL`. An `AFTER INSERT … FOR EACH STATEMENT` trigger calls `pg_notify(<channel>_appended, '')`, which Postgres delivers **on commit**.
-  - **Channel names** default to `zevent_<current_schema>`, because NOTIFY channels are database-wide and several services may share one database.
-- **Leader lease:** `pg_try_advisory_lock(<key derived from schema>)` on a dedicated connection. If the connection dies, the lock is released and another replica takes over.
-- **Sequencer**: one leader, so `max + row_number` is safe:
+- **Types.** `Store::Tx = sqlx::Transaction<'static, Postgres>` (sqlx 0.8, the same as z-auth, so a host can share one transaction across both). The host runs its business SQL on the same transaction.
+- **One schema per service.** `PgStore::new(pool, "orders")` owns the z-event tables in that schema. Statements are **schema-qualified**, so they work whatever the connection's `search_path` is, and several services can share one database and one pool. Schema names are plain identifiers (`[a-z_][a-z0-9_]*`, at most 40 characters).
+- **Tables:** `outbox`, `feed_meta`, `feed_consumers`, `feed_cursors`, `dead_letters`.
+  - Indexes: a unique index on `outbox(seq)`, a partial index `outbox(insert_id) WHERE seq IS NULL`, `outbox(aggregate)`, and open dead letters by `(consumer, producer, aggregate)`.
+  - They ship as **embedded migrations**: `z_event_postgres::migrate(&pool, "orders")` (or `PgStore::migrate`). They have their own history table, `zevent_migrations`, so they never clash with the host's migrations. A transaction-scoped advisory lock makes concurrent migrations from several replicas safe.
+- **Append** is an `INSERT … seq = NULL`. An `AFTER INSERT … FOR EACH STATEMENT` trigger calls `pg_notify('zevent_<schema>_appended', '')`, which Postgres delivers **on commit** (and folds into one notification per transaction).
+- **Leader lease:** `pg_try_advisory_lock(<key derived from the schema>)` on a **dedicated connection** that the lease owns.
+  - The sequencer statement runs on that same connection. If the connection is gone, so is the lock, and the statement fails: this is the fencing.
+  - Session locks need no renewal.
+  - Dropping the lease closes the connection and frees the lock, so a crashed process frees it too.
+- **Sequencer:** one leader, so `head + row_number` is safe. One transaction per batch:
 
   ```sql
-  WITH batch AS (
+  WITH meta AS (SELECT head FROM feed_meta FOR UPDATE),
+  batch AS (
       SELECT insert_id, row_number() OVER (ORDER BY insert_id) AS rn
-      FROM outbox
-      WHERE seq IS NULL
-      ORDER BY insert_id
-      LIMIT $1
+      FROM (SELECT insert_id FROM outbox WHERE seq IS NULL ORDER BY insert_id LIMIT $1) pending
   )
   UPDATE outbox o
-  SET    seq          = (SELECT coalesce(max(seq), 0) FROM outbox) + batch.rn,
-         sequenced_at = now()
-  FROM   batch
+  SET    seq = meta.head + batch.rn, sequenced_at = now()
+  FROM   batch, meta
   WHERE  o.insert_id = batch.insert_id
-  RETURNING o.seq;   -- the max is published with pg_notify(<channel>_sequenced, head)
+  RETURNING o.seq;
+  -- then: UPDATE feed_meta SET head = <max>; SELECT pg_notify('zevent_<schema>_sequenced', <max>)
   ```
 
-  Uncommitted rows are invisible to this statement, so only committed rows are stamped (contract §6, rules 1–3). Two transactions on the same aggregate are serialised by the host's row lock, so the second outbox row commits after the first and is stamped after it (rule 4).
-
-  The `max(seq)` read stays correct after purge, because purge never deletes the head row; `feed_meta.head` is the fallback.
-- **Notifications:** a `PgListener` (a dedicated connection) on both channels, plus the 1-second safety timer.
-- **Cursors:** `lock_cursor` = `SELECT … FOR UPDATE` on `feed_cursors(consumer, producer)`; it inserts the row on first use.
-- **Rule: runtime-checked queries only** (`sqlx::query`, `query_as`), **never the `query!` macros.** Macros inside a dependency would compile-check against the *host's* `DATABASE_URL` and break host builds. Correctness comes from the conformance suite running against a real Postgres (testcontainers).
-- **Compatibility:** PostgreSQL 13+, and Postgres-compatible distributions that support `LISTEN/NOTIFY` and advisory locks.
+  Uncommitted rows are invisible to this statement, so only committed rows are stamped (contract §6, rules 1–3). Two transactions on the same aggregate are serialised by the host's row lock, so the second outbox row is inserted after the first commits and is stamped after it (rule 4). `feed_meta.head` is the source of the next `seq`, so purging old rows never affects numbering.
+- **Notifications:** a `PgListener` on both channels, started on a task as soon as `notifications()` is called, so hints are not lost before the stream is polled. A reconnect yields `Notification::Lagged`. The producer's 1-second safety timer covers anything else.
+- **Cursors:** `lock_cursor` inserts the row on first use, then runs `SELECT … FOR UPDATE` on `feed_cursors(consumer, producer)`. A second locker waits until the first transaction ends.
+- **Retention:** `purge` computes the boundary as `least(head - 1, min(acked_seq), first seq sequenced at or after the cut-off - 1)`, deletes up to it, and records it as `purged_through`.
+- **Rule: runtime-checked queries only** (`sqlx::query`, `query_as`), **never the `query!` macros.** Macros inside a dependency would compile-check against the *host's* `DATABASE_URL` and break host builds. Correctness comes from the conformance suites running against a real Postgres.
+- **Compatibility:** PostgreSQL 13+, and Postgres-compatible distributions that support `LISTEN/NOTIFY` and advisory locks. The test suite runs on PostgreSQL 13 and 16, in containers (testcontainers), or against `ZEVENT_PG_URL`.
 
 ## 16. gRPC adapter (`z-event-grpc`)
 

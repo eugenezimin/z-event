@@ -71,7 +71,7 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
   - `cargo nextest` (CI profile), `cargo deny` and `actionlint` pass locally.
 - `PeerIdentity` moved to the transport adapters (core keeps `PeerId`); `z-event-grpc` defines it in ZE4.
 
-### ZE3. Postgres adapter (`z-event-postgres`). Size: M (1–1.5 weeks)
+### ZE3. Postgres adapter (`z-event-postgres`). Size: M (1–1.5 weeks). ✅ Done
 
 **Tasks:**
 1. Embedded migrations with their own history table; `migrate(&pool)`; unqualified table names (works per schema via `search_path`).
@@ -85,6 +85,12 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 - the conformance suite passes against Postgres in testcontainers (13 and 16 at least);
 - two schemas in one database run independent feeds without cross-talk;
 - the sequencer failover test passes with two processes.
+
+**Outcome of ZE3:**
+- `z-event-postgres` on sqlx 0.8 (the same as z-auth). Statements are schema-qualified, migrations are embedded (`z_event_postgres::migrate(&pool, schema)`), and the advisory-lock lease runs on a dedicated connection that also carries the sequencer statement (fencing).
+- The storage suite (26 cases) passes on PostgreSQL 13 and 16 in testcontainers, and the transport suite passes on PostgreSQL 16. Adapter tests: two schemas in one database without cross-talk; idempotent and concurrent migrations; host writes sharing the transaction; a dropped lease freeing leadership; the notification payloads.
+- The sequencer failover case runs two producers with separate database sessions in one test process. From PostgreSQL's point of view that is the same as two processes.
+- Finding: with a networked database, a killed task's `COMMIT` can still land after the task is gone. The crash test now reads the cursor under `lock_cursor` (`World::settled`), so it compares effects and cursor only after in-flight transactions finish.
 
 ### ZE4. gRPC adapter (`z-event-grpc`). Size: M (1–1.5 weeks)
 
