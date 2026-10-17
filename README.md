@@ -25,7 +25,7 @@ At modest volume (up to hundreds of events per second per service), the database
 | Crate | Folder | What it is | Optional? |
 |---|---|---|---|
 | `z-event` | `core/` | Protocol, `Producer`, `Subscriber`, storage and transport **ports** (traits), in-process transport. No database or network dependencies | required |
-| `z-event-postgres` | `adapters/postgres/` | Storage adapter for PostgreSQL (sqlx): outbox, sequencer, LISTEN/NOTIFY, cursors, dead letters, embedded migrations. **Planned (ZE3)** | use it, or write your own (e.g. MongoDB) |
+| `z-event-postgres` | `adapters/postgres/` | Storage adapter for PostgreSQL (sqlx): outbox, sequencer, LISTEN/NOTIFY, cursors, dead letters, embedded migrations. **Planned (ZE3)** | use it, or write your own |
 | `z-event-grpc` | `adapters/grpc/` | Transport adapter for gRPC (tonic): a feed service you **mount on your own server**, a client on **your own channel**, or turnkey standalone helpers. **Planned (ZE4)** | use it, or write your own (e.g. HTTP/SSE) |
 | `z-event-memory` | `adapters/memory/` | In-memory storage: the reference implementation, for tests and examples | dev/test |
 | `z-event-testkit` | `testkit/` | Conformance suites that every storage or transport adapter must pass | dev/test |
