@@ -1,0 +1,19 @@
+[package]
+name = "z-event-example-in-process"
+description = "orders -> billing in one process with the memory adapter and the in-process transport."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+z-event            = { workspace = true }
+z-event-memory     = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

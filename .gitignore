@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.DS_Store
+.env
+.idea/
+.vscode/
+.zed/
+.claude/

@@ -1,0 +1,25 @@
+[package]
+name = "z-event-memory"
+description = "In-memory storage adapter for z-event: the reference implementation of the storage ports, for tests and examples."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+z-event   = { workspace = true }
+bytes     = { workspace = true }
+futures   = { workspace = true }
+thiserror = { workspace = true }
+time      = { workspace = true }
+tokio     = { workspace = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+z-event-testkit = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

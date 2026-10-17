@@ -1,0 +1,34 @@
+[package]
+name = "z-event"
+description = "Reliable, push-based events between services without a message broker: transactional outbox, ordered feed, exactly-once effects."
+readme = "../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "z_event"
+
+[dependencies]
+bytes      = { workspace = true }
+fastrand   = { workspace = true }
+futures    = { workspace = true }
+metrics    = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+time       = { workspace = true }
+tokio      = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tokio-util = { workspace = true }
+tracing    = { workspace = true }
+ulid       = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros", "test-util"] }
+
+[lints]
+workspace = true

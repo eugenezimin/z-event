@@ -22,10 +22,10 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 
 ---
 
-### ZE1. Workspace skeleton, core types and ports. Size: S (3–4 days)
+### ZE1. Workspace skeleton, core types and ports. Size: S (3–4 days). ✅ Done
 
 **Tasks:**
-1. Run `git init`. Create a Cargo workspace with members `core`, `adapters/{postgres,grpc,memory}`, `testkit` and `examples`. Add `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`, `CHANGELOG.md`, and choose a licence.
+1. Run `git init`. Create a Cargo workspace with members `core`, `adapters/memory`, `testkit` and `examples`; `adapters/postgres` and `adapters/grpc` are created in ZE3 and ZE4. Add `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`, `CHANGELOG.md`, and choose a licence (MIT OR Apache-2.0).
 2. CI: fmt, clippy, deny, nextest, plus the "core has no adapter dependencies" check.
 3. `core` types:
    - `Event`, `NewEvent` (builder: `json(type, aggregate, aggregate_version, &payload)`, `.correlation()`, `.header()`), `Seq`, `Epoch`, `Cursor`, `FeedHead`, `TypeFilter`, `DeadLetter`;
@@ -34,7 +34,7 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 
 **Done when:** the workspace builds and CI is green. The port traits compile with a dummy implementation in a doc test.
 
-### ZE2. Core runtime, in-memory adapter and the conformance testkit. Size: M (1.5–2 weeks). ★ The critical milestone
+### ZE2. Core runtime, in-memory adapter and the conformance testkit. Size: M (1.5–2 weeks). ★ The critical milestone. ✅ Done
 
 **Tasks:**
 1. **`Producer`:**
@@ -60,6 +60,11 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 
 **Done when:** `z-event-memory` + `InProcess` pass both conformance suites in CI, 0 lost and 0 duplicated effects.
 
+**Outcome of ZE1–ZE2:**
+- Port signatures are final (DESIGN §13–§14). Decisions made while building them are recorded in DESIGN: cursors keyed by (consumer, producer), a single `TransportError`, the opening checkpoint that carries the epoch, lease fencing and renewal, `purged_through` with `BeyondRetention`, notifications as hints.
+- `z-event-memory` with the in-process transport passes both suites: 24 storage cases and 9 transport cases. The suites were checked against seeded bugs (no dedup, effect and cursor in separate transactions, skipped backlog events, sequencing uncommitted appends); each makes at least one case fail.
+- `PeerIdentity` moved to the transport adapters (core keeps `PeerId`); `z-event-grpc` defines it in ZE4.
+
 ### ZE3. Postgres adapter (`z-event-postgres`). Size: M (1–1.5 weeks)
 
 **Tasks:**
@@ -78,7 +83,7 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 ### ZE4. gRPC adapter (`z-event-grpc`). Size: M (1–1.5 weeks)
 
 **Tasks:**
-1. `proto/zevent/v1/feed.proto` (DESIGN §16); codegen via `tonic-build` in `build.rs`, with the generated code committed or produced at build time (decide in ZE1).
+1. `proto/zevent/v1/feed.proto` (DESIGN §16); codegen via `tonic-build` + `protox` in `build.rs` at build time (decided in ZE1: no system `protoc`, nothing generated is committed).
 2. `feed_service(source, identity)`, a tonic service mountable on the host's server.
 3. `Client::new(channel)`, implementing `Transport`.
 4. Turnkey helpers: `serve_standalone(source, addr, ServerTls)` and `Client::connect(url, ClientTls)`.
@@ -110,4 +115,4 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 | Port design leaks Postgres assumptions | Other adapters (e.g. MongoDB) are hard or impossible | The memory adapter is built first and must pass the full suite; review the ports against the Mongo sketch (DESIGN §17) before ZE3 |
 | Subtle delivery bugs: gaps, duplicates, stalls | Lost or doubled effects in host systems | Sequencer by design; conformance suite with concurrency and chaos tests on every CI build; lag and unsequenced alerts |
 | Generic traits make the API hard to use | Hosts wrap it inconsistently | Examples first; builders with defaults; one-call turnkey helpers in the gRPC adapter |
-| Async-trait ergonomics (`Send` bounds on generic futures) | Compile errors in hosts | Decide in ZE1: native async fn in traits with explicit `Send` bounds, or the `async-trait` crate; test with a multi-threaded runtime in examples |
+| Async-trait ergonomics (`Send` bounds on generic futures) | Compile errors in hosts | Decided in ZE1: native async methods declared as `impl Future + Send` (implementors write `async fn`), no `async-trait`; the example and the suites run on a multi-threaded runtime |

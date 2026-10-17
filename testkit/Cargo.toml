@@ -1,0 +1,20 @@
+[package]
+name = "z-event-testkit"
+description = "Conformance suites for z-event storage and transport adapters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+z-event  = { workspace = true }
+fastrand = { workspace = true }
+futures  = { workspace = true }
+time     = { workspace = true }
+tokio    = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+
+[lints]
+workspace = true
