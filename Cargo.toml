@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "adapters/memory", "testkit", "examples/in-process"]
+members = ["core", "adapters/memory", "adapters/postgres", "testkit", "examples/in-process"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,7 @@ categories = ["asynchronous", "database"]
 [workspace.dependencies]
 z-event         = { path = "core", version = "0.1.0" }
 z-event-memory  = { path = "adapters/memory", version = "0.1.0" }
+z-event-postgres = { path = "adapters/postgres", version = "0.1.0" }
 z-event-testkit = { path = "testkit", version = "0.1.0" }
 
 tokio       = { version = "1.47", default-features = false }
@@ -29,6 +30,9 @@ metrics-util = { version = "0.20", default-features = false, features = ["regist
 ulid        = { version = "1", features = ["serde"] }
 time        = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 fastrand    = "2"
+# sqlx 0.8 matches z-auth, so hosts can share one transaction type.
+sqlx        = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "time", "json"] }
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [workspace.lints.rust]
