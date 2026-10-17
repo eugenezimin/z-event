@@ -1,0 +1,74 @@
+// z-event feed protocol over gRPC.
+//
+// A consumer opens Subscribe with a Start message and then sends periodic
+// Acks. The producer pushes the backlog in seq order, then live events as
+// they are sequenced, with Checkpoint heartbeats. The stream always opens
+// with a Checkpoint at from_seq that carries the feed's epoch.
+syntax = "proto3";
+package zevent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service EventFeed {
+  // Bidirectional: Start first, then Acks. Events and Checkpoints back.
+  rpc Subscribe(stream SubscribeMessage) returns (stream FeedMessage);
+  // Current state of aggregates as *Snapshot events, ending with a Checkpoint.
+  rpc Snapshot(SnapshotRequest) returns (stream FeedMessage);
+  rpc Head(HeadRequest) returns (HeadResponse);
+}
+
+message SubscribeMessage {
+  oneof msg {
+    Start start = 1;
+    Ack ack = 2;
+  }
+}
+
+message Start {
+  string consumer = 1;        // must match the caller's identity
+  uint64 from_seq = 2;        // last applied seq (exclusive start)
+  string epoch = 3;           // epoch of that cursor; empty on first subscribe
+  repeated string types = 4;  // empty: every type the ACL allows
+}
+
+message Ack { uint64 applied_seq = 1; }
+
+message FeedMessage {
+  oneof msg {
+    Event event = 1;
+    Checkpoint checkpoint = 2;
+  }
+}
+
+message Event {
+  uint64 seq = 1;
+  string id = 2;                        // ULID, the idempotency key
+  string type = 3;
+  uint32 version = 4;
+  string aggregate = 5;
+  uint64 aggregate_version = 6;
+  string correlation_id = 7;            // empty: none
+  google.protobuf.Timestamp occurred_at = 8;
+  map<string, string> headers = 9;      // host-defined metadata
+  bytes payload = 10;                   // host-defined (usually JSON)
+}
+
+// Every matching event with seq <= Checkpoint.seq was sent before it.
+message Checkpoint {
+  uint64 seq = 1;
+  uint64 head = 2;
+  string epoch = 3;
+}
+
+message SnapshotRequest {
+  string consumer = 1;
+  repeated string aggregate_types = 2;
+}
+
+message HeadRequest {}
+
+message HeadResponse {
+  uint64 head = 1;
+  string epoch = 2;
+  uint64 purged_through = 3;
+}
