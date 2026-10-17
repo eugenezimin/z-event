@@ -47,6 +47,14 @@ pub trait Store: Send + Sync + 'static {
             Ok(())
         }
     }
+
+    /// Begins a read-only transaction that sees one consistent state across
+    /// all its reads, for snapshots. The default is [`begin`](Store::begin);
+    /// adapters whose default isolation is weaker override it (PostgreSQL:
+    /// `REPEATABLE READ READ ONLY`).
+    fn begin_snapshot(&self) -> impl Future<Output = Result<Self::Tx, Self::Error>> + Send {
+        self.begin()
+    }
 }
 
 /// The producer side: the outbox, the sequencer and the feed.

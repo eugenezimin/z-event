@@ -236,6 +236,9 @@ pub enum SubscriberError {
     /// The consumer's storage failed.
     #[error("store: {0}")]
     Store(#[source] BoxError),
+    /// The producer or the network was unavailable; try again.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
     /// The subscriber task panicked or was aborted.
     #[error("subscriber task failed: {0}")]
     Task(String),

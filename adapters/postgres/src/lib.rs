@@ -203,6 +203,14 @@ impl Store for PgStore {
     async fn rollback(&self, tx: Self::Tx) -> Result<(), PgError> {
         Ok(tx.rollback().await?)
     }
+
+    async fn begin_snapshot(&self) -> Result<Self::Tx, PgError> {
+        let mut tx = self.inner.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        Ok(tx)
+    }
 }
 
 /// Creates a [`PgStore`] for `schema` and migrates it: the one call a
