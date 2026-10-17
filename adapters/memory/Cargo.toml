@@ -20,6 +20,8 @@ tokio     = { workspace = true, features = ["sync", "time"] }
 [dev-dependencies]
 z-event-testkit = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }
+metrics      = { workspace = true }
+metrics-util = { workspace = true }
 
 [lints]
 workspace = true
