@@ -1,0 +1,47 @@
+[package]
+name = "z-event-grpc"
+description = "gRPC transport adapter for z-event: a feed service to mount on your tonic server, a client on your channel, and standalone helpers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+include = ["src/**", "proto/**", "build.rs", "Cargo.toml"]
+
+[features]
+default = ["tls"]
+# TLS for the standalone helpers and client, and MtlsIdentity (client certificates).
+tls = ["tonic/tls-ring", "dep:x509-parser"]
+
+[dependencies]
+z-event      = { workspace = true }
+futures      = { workspace = true }
+prost        = { workspace = true }
+prost-types  = { workspace = true }
+thiserror    = { workspace = true }
+time         = { workspace = true }
+tokio        = { workspace = true, features = ["sync", "rt", "net", "time", "macros"] }
+tokio-stream = { workspace = true, features = ["net"] }
+tonic        = { workspace = true, features = ["transport", "codegen", "router"] }
+tonic-prost  = { workspace = true }
+tracing      = { workspace = true }
+x509-parser  = { workspace = true, optional = true }
+
+[build-dependencies]
+protox            = { workspace = true }
+tonic-prost-build = { workspace = true }
+
+[dev-dependencies]
+z-event-memory  = { workspace = true }
+z-event-testkit = { workspace = true }
+rcgen           = { workspace = true }
+fastrand        = { workspace = true }
+time            = { workspace = true }
+tokio-stream    = { workspace = true, features = ["net"] }
+tonic           = { workspace = true, features = ["transport", "router"] }
+tokio           = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "net", "time", "macros", "io-util"] }
+
+[lints]
+workspace = true

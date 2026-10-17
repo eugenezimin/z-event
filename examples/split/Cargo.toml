@@ -1,0 +1,25 @@
+[package]
+name = "z-event-example-split"
+description = "orders -> billing as two processes: PostgreSQL storage and the gRPC transport."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+z-event            = { workspace = true }
+z-event-postgres   = { workspace = true }
+z-event-grpc       = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+sqlx               = { workspace = true }
+tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+testcontainers-modules = { workspace = true }
+tokio                  = { workspace = true, features = ["rt-multi-thread", "macros", "process", "time", "io-util"] }
+
+[lints]
+workspace = true

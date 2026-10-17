@@ -4,6 +4,7 @@
 //! with backoff.
 
 mod apply;
+mod bootstrap;
 mod policy;
 
 use std::sync::Arc;
@@ -92,6 +93,7 @@ pub(crate) struct Config {
     pub(crate) reconnect: Backoff,
     pub(crate) ack_interval: Duration,
     pub(crate) batch_size: usize,
+    pub(crate) bootstrap: Option<Vec<String>>,
 }
 
 pub(crate) struct Inner<S, T, H> {
@@ -131,6 +133,7 @@ pub struct SubscriberBuilder<S, T, H> {
     reconnect: Backoff,
     ack_interval: Duration,
     batch_size: usize,
+    bootstrap: Option<Vec<String>>,
 }
 
 impl<S, T, H> SubscriberBuilder<S, T, H>
@@ -188,6 +191,20 @@ where
         self
     }
 
+    /// Starts from the producer's snapshot of these aggregate types instead
+    /// of replaying history when the cursor is new, and instead of stopping
+    /// when the cursor is below the producer's retention window. The
+    /// producer needs a [`Snapshotter`](crate::Snapshotter); the handler
+    /// receives its `*Snapshot` events.
+    pub fn bootstrap_from_snapshot<I, X>(mut self, aggregate_types: I) -> Self
+    where
+        I: IntoIterator<Item = X>,
+        X: Into<String>,
+    {
+        self.bootstrap = Some(aggregate_types.into_iter().map(Into::into).collect());
+        self
+    }
+
     /// Builds the subscriber.
     ///
     /// # Panics
@@ -210,6 +227,7 @@ where
                     reconnect: self.reconnect,
                     ack_interval: self.ack_interval,
                     batch_size: self.batch_size,
+                    bootstrap: self.bootstrap,
                 },
                 reset: Notify::new(),
                 labels,
@@ -286,6 +304,7 @@ where
             reconnect: Backoff::default(),
             ack_interval: Duration::from_secs(5),
             batch_size: 1,
+            bootstrap: None,
         }
     }
 
@@ -338,6 +357,26 @@ where
             .map_err(store_error)?;
         self.inner.reset.notify_one();
         Ok(())
+    }
+
+    /// Applies the producer's snapshot of `aggregate_types` and moves the
+    /// cursor to it (see
+    /// [`bootstrap_from_snapshot`](SubscriberBuilder::bootstrap_from_snapshot)).
+    /// Returns the position the consumer continues from. Use it while the
+    /// subscriber is not running, e.g. after a rebuild.
+    pub async fn bootstrap(&self, aggregate_types: Vec<String>) -> Result<Seq, SubscriberError> {
+        match self
+            .inner
+            .bootstrap_from(aggregate_types, &CancellationToken::new())
+            .await
+        {
+            Ok(seq) => Ok(seq),
+            Err(Outcome::Fatal(e)) => Err(e),
+            Err(Outcome::Retry(reason)) => Err(SubscriberError::Unavailable(reason)),
+            Err(Outcome::Shutdown | Outcome::Reconnect) => {
+                Err(SubscriberError::Unavailable("interrupted".into()))
+            }
+        }
     }
 
     /// Parked events matching `filter`.
@@ -507,6 +546,16 @@ where
             Ok(c) => c,
             Err(e) => return Outcome::Retry(format!("reading cursor: {e}")),
         };
+        // A new consumer starts from the snapshot instead of all history.
+        if let Some(types) = &self.cfg.bootstrap
+            && cursor.seq == Seq::ZERO
+            && cursor.epoch.is_none()
+        {
+            return match self.bootstrap_from(types.clone(), cancel).await {
+                Ok(_) => Outcome::Reconnect,
+                Err(o) => o,
+            };
+        }
         let start = Start {
             consumer: self.cfg.key.consumer.clone(),
             from_seq: cursor.seq,
@@ -519,6 +568,15 @@ where
         };
         match subscribed {
             Ok(sub) => self.stream(sub, cursor, cancel, status, attempt).await,
+            // Below the retention window: rebuild from the snapshot if allowed.
+            Err(TransportError::BeyondRetention { .. }) if self.cfg.bootstrap.is_some() => {
+                let types = self.cfg.bootstrap.clone().unwrap_or_default();
+                tracing::warn!("cursor is below the producer's retention window; bootstrapping");
+                match self.bootstrap_from(types, cancel).await {
+                    Ok(_) => Outcome::Reconnect,
+                    Err(o) => o,
+                }
+            }
             Err(e) => self.transport_failure(e, cursor.epoch),
         }
     }

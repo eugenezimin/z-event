@@ -133,18 +133,28 @@ pub async fn read_all<S: OutboxStore>(
 }
 
 /// Source positions of the effects recorded by [`EffectHandler`] in
-/// `store`, in the order they were committed.
+/// `store`, in the order they were committed (snapshot events excluded).
 pub async fn effects<S: OutboxStore>(store: &S) -> Vec<u64> {
     drain_sequencer(store).await;
     read_all(store, Seq::ZERO, &TypeFilter::only([EFFECT]))
         .await
         .iter()
-        .map(|e| {
+        .filter_map(|e| {
             e.aggregate
                 .strip_prefix("effect/")
                 .and_then(|s| s.parse().ok())
-                .unwrap()
         })
+        .collect()
+}
+
+/// Aggregates of the snapshot events applied through [`EffectHandler`],
+/// in the order they were committed.
+pub async fn snapshot_effects<S: OutboxStore>(store: &S) -> Vec<String> {
+    drain_sequencer(store).await;
+    read_all(store, Seq::ZERO, &TypeFilter::only([EFFECT]))
+        .await
+        .iter()
+        .filter_map(|e| e.aggregate.strip_prefix("snapshot/").map(str::to_owned))
         .collect()
 }
 
@@ -273,6 +283,23 @@ impl<S: OutboxStore + CursorStore + Clone> World<S> {
     /// The consumer's committed cursor position.
     pub async fn cursor(&self) -> Seq {
         self.billing.cursor(&self.key()).await.unwrap().seq
+    }
+
+    /// The consumer's cursor and recorded effects, read once no apply
+    /// transaction is in flight: the cursor is taken with `lock_cursor`,
+    /// which waits for a transaction that still holds it (with a networked
+    /// database, a killed task's COMMIT can still land after the task is
+    /// gone).
+    pub async fn settled(&self) -> (Seq, Vec<u64>) {
+        let mut tx = self.billing.begin().await.unwrap();
+        let cursor = self
+            .billing
+            .lock_cursor(&mut tx, &self.key())
+            .await
+            .unwrap();
+        let effects = effects(&self.billing).await;
+        self.billing.rollback(tx).await.unwrap();
+        (cursor.seq, effects)
     }
 
     /// Waits until the consumer's cursor reaches `seq`.

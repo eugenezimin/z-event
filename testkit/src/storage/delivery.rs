@@ -12,7 +12,7 @@ use crate::factory::StoreFactory;
 use crate::faults::{
     CrashTiming, CrashingStore, KillPoint, KillingHandler, ReplayingTransport, StreamCutter,
 };
-use crate::handlers::{EffectHandler, PoisonHandler};
+use crate::handlers::{EffectHandler, FixedSnapshot, PoisonHandler};
 use crate::util::{
     CONSUMER, PRODUCER, World, assert_exactly_once, expect_stop, producer_config, rng, scale,
     wait_until,
@@ -214,8 +214,8 @@ pub async fn crash_mid_apply<F: StoreFactory>(f: &F) {
         sub.abort_and_wait().await;
 
         // Effects and cursor must agree exactly.
-        let cursor = w.cursor().await.get();
-        let effects = w.effects().await;
+        let (cursor, effects) = w.settled().await;
+        let cursor = cursor.get();
         let new: Vec<u64> = effects[verified_effects..].to_vec();
         assert_eq!(
             new,
@@ -543,6 +543,70 @@ pub async fn start_below_retention_rejected<F: StoreFactory>(f: &F) {
     sub.shutdown().await.unwrap();
     assert_exactly_once(&w.effects().await, [10]);
     w.shutdown().await;
+}
+
+/// A consumer whose cursor is below the retention window bootstraps from
+/// the producer's snapshot (instead of stopping) and continues live from
+/// the snapshot's position.
+pub async fn bootstrap_beyond_retention<F: StoreFactory>(f: &F) {
+    let w = World::new(f).await;
+    w.append_n(10, "OrderConfirmed", "orders").await;
+    w.wait_head(10).await;
+    let later = time::OffsetDateTime::now_utc() + time::Duration::minutes(5);
+    assert_eq!(w.orders.purge(later).await.unwrap(), 9);
+    // A stale cursor in the current epoch, below the retention window.
+    let epoch = w.orders.head().await.unwrap().epoch;
+    w.billing
+        .reset_cursor(&w.key(), Cursor::start().with_epoch(epoch).next(Seq(3)))
+        .await
+        .unwrap();
+    bootstrap_case(&w, 0..10).await;
+}
+
+/// A new consumer configured to bootstrap starts from the producer's
+/// snapshot instead of replaying the whole history.
+pub async fn bootstrap_new_consumer<F: StoreFactory>(f: &F) {
+    let w = World::new(f).await;
+    w.append_n(10, "OrderConfirmed", "orders").await;
+    w.wait_head(10).await;
+    bootstrap_case(&w, 0..10).await;
+}
+
+async fn bootstrap_case<S: OutboxStore + CursorStore + Clone>(
+    w: &World<S>,
+    orders: std::ops::Range<u32>,
+) {
+    let aggregates: Vec<String> = orders.map(|i| format!("orders/{i}")).collect();
+    let transport = z_event::InProcess::new();
+    transport.register(
+        PRODUCER,
+        w.producer
+            .feed_source(z_event::AllowAll)
+            .with_snapshotter(FixedSnapshot::new(aggregates.clone())),
+    );
+    let sub = w
+        .subscriber(transport, w.effect_handler())
+        .bootstrap_from_snapshot(["orders"])
+        .spawn();
+    w.wait_cursor(10).await;
+    w.append_n(5, "OrderConfirmed", "live").await;
+    w.wait_cursor(15).await;
+    assert!(
+        !sub.is_finished(),
+        "the subscriber keeps running after the bootstrap"
+    );
+    sub.shutdown().await.unwrap();
+
+    let mut snapshot = crate::util::snapshot_effects(&w.billing).await;
+    snapshot.sort();
+    let mut expected = aggregates;
+    expected.sort();
+    assert_eq!(snapshot, expected, "every snapshot event applied once");
+    assert_exactly_once(&w.effects().await, 11..=15);
+    assert_eq!(
+        w.billing.cursor(&w.key()).await.unwrap().epoch,
+        Some(w.orders.head().await.unwrap().epoch)
+    );
 }
 
 /// `reset_cursor` on a running subscriber replays from the new position.

@@ -1,6 +1,6 @@
 # z-event: design
 
-> Status: **ZE1 and ZE2 implemented**: the core (`z-event`), the in-memory adapter (`z-event-memory`) and the conformance testkit (`z-event-testkit`). The Postgres and gRPC adapters are planned (ZE3, ZE4). The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Port signatures in §13–§14 are final as of ZE1.
+> Status: implemented. The core (`z-event`), the in-memory adapter (`z-event-memory`), the PostgreSQL adapter (`z-event-postgres`), the gRPC adapter (`z-event-grpc`), the operations CLI (`z-event-cli`) and the conformance testkit (`z-event-testkit`) are in place. Operations are covered in [`docs/operating.md`](docs/operating.md); adapter authors start with [`docs/writing-an-adapter.md`](docs/writing-an-adapter.md). The build order is in [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md). Port signatures in §13–§14 are final as of ZE1.
 >
 > z-event is a Rust library for **reliable, push-based, event-driven communication between services without a message broker**. A producer writes events into its own database in the same transaction as the business change (a *transactional outbox*). It then serves that outbox as an ordered feed, and consumers subscribe to it. Each consumer stores its position (cursor) in the same transaction as the effect of the event, so nothing is lost and nothing is applied twice.
 >
@@ -78,8 +78,8 @@ z-event/
 │                           #   depends on: tokio, tokio-util, futures, serde, serde_json, bytes, thiserror,
 │                           #   tracing, metrics, ulid, time, fastrand. NO database, NO gRPC
 ├── adapters/
-│   ├── postgres/           # crate `z-event-postgres`: storage ports on PostgreSQL (sqlx)          [planned, ZE3]
-│   ├── grpc/               # crate `z-event-grpc`: transport port on gRPC (tonic) + feed.proto     [planned, ZE4]
+│   ├── postgres/           # crate `z-event-postgres`: storage ports on PostgreSQL (sqlx)
+│   ├── grpc/               # crate `z-event-grpc`: transport port on gRPC (tonic) + feed.proto
 │   └── memory/             # crate `z-event-memory`: in-memory storage (reference implementation, tests, examples)
 ├── testkit/                # crate `z-event-testkit`: conformance suites for storage and transport adapters
 └── examples/               # toy orders → billing: in-process (memory) and split (postgres + grpc)
@@ -308,6 +308,8 @@ Parked events live in the **consumer's** storage, through `CursorStore`. Replay 
 - **A new consumer, or a rebuild beyond retention**, works in two steps:
   1. It calls `Snapshot`. The producer streams the current state of every requested aggregate as `<Type>Snapshot` events, provided by the host's `Snapshotter`, read in one consistent read, and ends with `Checkpoint(seq = S)`.
   2. The consumer subscribes from `S`. Changes committed while the snapshot was taken may arrive again after `S`, which is harmless thanks to `aggregate_version`.
+
+  A subscriber does this by itself with `SubscriberBuilder::bootstrap_from_snapshot(aggregate_types)`: when its cursor is new, and when the producer refuses its cursor as below the retention window. An operator can also run it with `Subscriber::bootstrap(aggregate_types)`. The snapshot events are applied in their own transactions, then the cursor moves to `S` with the feed's epoch. A bootstrap that is interrupted and run again is harmless if the handler honours `aggregate_version`. Snapshot events all carry `seq = S`, so they cannot be parked: a snapshot event that keeps failing stops the subscriber.
 - **Epochs.** Every feed has an `epoch` id, stored by the producer. A consumer's cursor records the epoch it belongs to. The producer refuses a `Start` whose epoch differs from its own, and the Subscriber stops with an alert. Epochs change:
   - **explicitly**, when an operator restores the producer's storage from a backup and runs `z-event-cli epoch rotate` (part of the restore runbook);
   - **automatically**, when a consumer's `from_seq` is **ahead** of the producer's head **in the producer's current epoch**: a sure sign the producer went back in time. The producer rotates the epoch and rejects the stream. A consumer with no epoch yet that is ahead of the head is rejected without rotating (nothing proves the feed went back).
@@ -334,6 +336,8 @@ pub trait Store: Send + Sync + 'static {
     fn begin(&self) -> impl Future<Output = Result<Self::Tx, Self::Error>> + Send;
     fn commit(&self, tx: Self::Tx) -> impl Future<Output = Result<(), Self::Error>> + Send;
     fn rollback(&self, tx: Self::Tx) -> impl Future<Output = Result<(), Self::Error>> + Send; // default: drop
+    /// A read-only transaction with one consistent view, for snapshots. Default: begin().
+    fn begin_snapshot(&self) -> impl Future<Output = Result<Self::Tx, Self::Error>> + Send;
 }
 
 /// Producer side. Written with `async fn` for brevity; the trait declares `impl Future + Send`.
@@ -462,7 +466,7 @@ pub struct Subscription {
 
 **Server side**, core provides `FeedSource<S: OutboxStore>` (from `Producer::feed_source(acl)`):
 - `open(peer: &PeerId, start: Start) -> Result<FeedStream, FeedError>` does, in order: the identity check (`start.consumer == peer`), the ACL check for explicitly requested types, the epoch check (§11), the retention check, and registers the consumer. The stream is pull-based (the transport's flow control is the backpressure; dropping it cancels it): the opening checkpoint, the backlog in batches (default 500) with skip checkpoints, then live push, with heartbeats every 15 s when idle.
-- `on_ack(peer, ack)`, `head()`, and `snapshot(peer, request)`: the host's `Snapshotter` (set with `with_snapshotter`) produces `*Snapshot` events, read in one transaction begun after the head `S` was read; they carry `seq = S` and end with `Checkpoint(S)`.
+- `on_ack(peer, ack)`, `head()`, and `snapshot(peer, request)`: the host's `Snapshotter` (set with `with_snapshotter`) produces `*Snapshot` events, read in one consistent read-only transaction (`Store::begin_snapshot`) begun after the head `S` was read; they carry `seq = S` and end with `Checkpoint(S)`.
 
 A transport adapter only maps its wire format to these calls. That is why a new transport (HTTP/SSE, WebSocket, a broker relay) is small.
 
@@ -470,38 +474,38 @@ A transport adapter only maps its wire format to these calls. That is why a new 
 
 ## 15. Postgres adapter (`z-event-postgres`)
 
-- **Types.** `Store::Tx = sqlx::Transaction<'static, Postgres>`. The host runs its business SQL on the same transaction.
-- **Tables.** `outbox`, `feed_meta`, `feed_consumers`, `feed_cursors`, `dead_letters`, with indexes on `outbox(seq)`, a partial index `outbox(insert_id) WHERE seq IS NULL`, and `outbox(aggregate)`.
-  - They ship as **embedded migrations**: `z_event_postgres::migrate(&pool)`, with their own migration history table, so they never clash with the host's migrations.
-  - Table names are **unqualified**, so a host that keeps one schema per service runs them in each schema via `search_path`.
-- **Append** is an `INSERT … seq = NULL`. An `AFTER INSERT … FOR EACH STATEMENT` trigger calls `pg_notify(<channel>_appended, '')`, which Postgres delivers **on commit**.
-  - **Channel names** default to `zevent_<current_schema>`, because NOTIFY channels are database-wide and several services may share one database.
-- **Leader lease:** `pg_try_advisory_lock(<key derived from schema>)` on a dedicated connection. If the connection dies, the lock is released and another replica takes over.
-- **Sequencer**: one leader, so `max + row_number` is safe:
+- **Types.** `Store::Tx = sqlx::Transaction<'static, Postgres>` (sqlx 0.8, the same as z-auth, so a host can share one transaction across both). The host runs its business SQL on the same transaction.
+- **One schema per service.** `PgStore::new(pool, "orders")` owns the z-event tables in that schema. Statements are **schema-qualified**, so they work whatever the connection's `search_path` is, and several services can share one database and one pool. Schema names are plain identifiers (`[a-z_][a-z0-9_]*`, at most 40 characters).
+- **Tables:** `outbox`, `feed_meta`, `feed_consumers`, `feed_cursors`, `dead_letters`.
+  - Indexes: a unique index on `outbox(seq)`, a partial index `outbox(insert_id) WHERE seq IS NULL`, `outbox(aggregate)`, and open dead letters by `(consumer, producer, aggregate)`.
+  - They ship as **embedded migrations**: `z_event_postgres::migrate(&pool, "orders")` (or `PgStore::migrate`). They have their own history table, `zevent_migrations`, so they never clash with the host's migrations. A transaction-scoped advisory lock makes concurrent migrations from several replicas safe.
+- **Append** is an `INSERT … seq = NULL`. An `AFTER INSERT … FOR EACH STATEMENT` trigger calls `pg_notify('zevent_<schema>_appended', '')`, which Postgres delivers **on commit** (and folds into one notification per transaction).
+- **Leader lease:** `pg_try_advisory_lock(<key derived from the schema>)` on a **dedicated connection** that the lease owns.
+  - The sequencer statement runs on that same connection. If the connection is gone, so is the lock, and the statement fails: this is the fencing.
+  - Session locks need no renewal.
+  - Dropping the lease closes the connection and frees the lock, so a crashed process frees it too.
+- **Sequencer:** one leader, so `head + row_number` is safe. One transaction per batch:
 
   ```sql
-  WITH batch AS (
+  WITH meta AS (SELECT head FROM feed_meta FOR UPDATE),
+  batch AS (
       SELECT insert_id, row_number() OVER (ORDER BY insert_id) AS rn
-      FROM outbox
-      WHERE seq IS NULL
-      ORDER BY insert_id
-      LIMIT $1
+      FROM (SELECT insert_id FROM outbox WHERE seq IS NULL ORDER BY insert_id LIMIT $1) pending
   )
   UPDATE outbox o
-  SET    seq          = (SELECT coalesce(max(seq), 0) FROM outbox) + batch.rn,
-         sequenced_at = now()
-  FROM   batch
+  SET    seq = meta.head + batch.rn, sequenced_at = now()
+  FROM   batch, meta
   WHERE  o.insert_id = batch.insert_id
-  RETURNING o.seq;   -- the max is published with pg_notify(<channel>_sequenced, head)
+  RETURNING o.seq;
+  -- then: UPDATE feed_meta SET head = <max>; SELECT pg_notify('zevent_<schema>_sequenced', <max>)
   ```
 
-  Uncommitted rows are invisible to this statement, so only committed rows are stamped (contract §6, rules 1–3). Two transactions on the same aggregate are serialised by the host's row lock, so the second outbox row commits after the first and is stamped after it (rule 4).
-
-  The `max(seq)` read stays correct after purge, because purge never deletes the head row; `feed_meta.head` is the fallback.
-- **Notifications:** a `PgListener` (a dedicated connection) on both channels, plus the 1-second safety timer.
-- **Cursors:** `lock_cursor` = `SELECT … FOR UPDATE` on `feed_cursors(consumer, producer)`; it inserts the row on first use.
-- **Rule: runtime-checked queries only** (`sqlx::query`, `query_as`), **never the `query!` macros.** Macros inside a dependency would compile-check against the *host's* `DATABASE_URL` and break host builds. Correctness comes from the conformance suite running against a real Postgres (testcontainers).
-- **Compatibility:** PostgreSQL 13+, and Postgres-compatible distributions that support `LISTEN/NOTIFY` and advisory locks.
+  Uncommitted rows are invisible to this statement, so only committed rows are stamped (contract §6, rules 1–3). Two transactions on the same aggregate are serialised by the host's row lock, so the second outbox row is inserted after the first commits and is stamped after it (rule 4). `feed_meta.head` is the source of the next `seq`, so purging old rows never affects numbering.
+- **Notifications:** a `PgListener` on both channels, started on a task as soon as `notifications()` is called, so hints are not lost before the stream is polled. A reconnect yields `Notification::Lagged`. The producer's 1-second safety timer covers anything else.
+- **Cursors:** `lock_cursor` inserts the row on first use, then runs `SELECT … FOR UPDATE` on `feed_cursors(consumer, producer)`. A second locker waits until the first transaction ends.
+- **Retention:** `purge` computes the boundary as `least(head - 1, min(acked_seq), first seq sequenced at or after the cut-off - 1)`, deletes up to it, and records it as `purged_through`.
+- **Rule: runtime-checked queries only** (`sqlx::query`, `query_as`), **never the `query!` macros.** Macros inside a dependency would compile-check against the *host's* `DATABASE_URL` and break host builds. Correctness comes from the conformance suites running against a real Postgres.
+- **Compatibility:** PostgreSQL 13+, and Postgres-compatible distributions that support `LISTEN/NOTIFY` and advisory locks. The test suite runs on PostgreSQL 13 and 16, in containers (testcontainers), or against `ZEVENT_PG_URL`.
 
 ## 16. gRPC adapter (`z-event-grpc`)
 
@@ -511,7 +515,7 @@ A transport adapter only maps its wire format to these calls. That is why a new 
 |---|---|
 | The host already runs a tonic server (its own TLS/mTLS, interceptors, port) | `z_event_grpc::feed_service(source, identity)` returns a tonic service; the host adds it with `Server::builder().add_service(..)` |
 | The host already has a `tonic::transport::Channel` | `z_event_grpc::Client::new(channel)` implements the core `Transport` |
-| The host has no gRPC setup | `z_event_grpc::serve_standalone(source, addr, ServerTls)` and `Client::connect(url, ClientTls)` |
+| The host has no gRPC setup | `z_event_grpc::serve_standalone(source, identity, addr, tls)` (or `serve_standalone_with_shutdown` on a bound listener) and `Client::connect(url, tls)` |
 | A non-Rust consumer | generate a client from `proto/zevent/v1/feed.proto` |
 
 ```rust
@@ -529,13 +533,21 @@ Subscriber::builder(store, z_event_grpc::Client::new(channel), InvoiceHandler)
     .spawn();
 ```
 
-- **Peer identity.** The `PeerIdentity` trait lives in this adapter, because it depends on the request type; it yields the core's `PeerId`. The default `MtlsIdentity` reads the client certificate subject (CN or a SAN). Hosts may override it, e.g. with a signed token in request metadata.
-- **Code generation** (decided in ZE1, built in ZE4): `tonic-build` with `protox` at build time, so no system `protoc` is needed.
-- **Errors map to gRPC status codes:**
-  - `PERMISSION_DENIED`: the identity doesn't match, or the ACL refuses;
-  - `FAILED_PRECONDITION`: epoch mismatch, or a start below the retention window;
-  - `UNAVAILABLE`: the store is unreachable; the Subscriber retries.
-- **Keep-alive.** HTTP/2 keep-alive plus `Checkpoint` heartbeats every 15 s.
+- **Peer identity.** The `PeerIdentity` trait lives in this adapter, because it depends on the request type; it yields the core's `PeerId`. The adapter ships three implementations:
+  - `MtlsIdentity`, the client certificate: its subject CN, or the first DNS SAN (`MtlsIdentity::dns_san()`). Behind the `tls` feature, on by default.
+  - `TokenIdentity`: `authorization: Bearer <token>`, with tokens mapped to peers. The client sends the token with `Client::bearer_token(..)`.
+  - `MetadataIdentity`: a header taken as is. Only for tests, or behind an authenticating proxy.
+  Hosts can implement the trait themselves, e.g. for signed tokens.
+- **Client.** `Client` sends optional metadata with every call (`with_metadata`, `bearer_token`). It talks to the one producer its channel points at; the `producer` argument of `Transport` is not sent.
+- **Code generation:** `tonic-prost-build` with `protox` in `build.rs`, so no system `protoc` is needed and nothing generated is committed.
+- **Errors map to gRPC status codes.** Details travel in metadata (`zevent-producer-epoch`, `zevent-purged-through`, …), so the client rebuilds the exact error:
+  - `PERMISSION_DENIED` (`UNAUTHENTICATED` from an identity) for an identity mismatch or an ACL refusal. Not retried.
+  - `FAILED_PRECONDITION` for an epoch mismatch. Not retried.
+  - `OUT_OF_RANGE` for a start below the retention window. Not retried.
+  - `INVALID_ARGUMENT` for a malformed request; `UNIMPLEMENTED` when snapshots are not configured. Not retried.
+  - `UNAVAILABLE`, or any other code, when the store or the network failed. The subscriber retries.
+- **Keep-alive.** HTTP/2 keep-alive (30 s interval, 10 s timeout) in the standalone helpers and `Client::connect`, plus `Checkpoint` heartbeats every 15 s.
+- **Tested** with the transport suite over real HTTP/2 on localhost, and with connection cuts through a TCP proxy. Further tests cover mutual TLS with generated certificates, bearer tokens on a host-built server, and commit → applied latency (p95 well under 100 ms). `examples/split` runs orders and billing as two processes on PostgreSQL.
 
 ```proto
 // adapters/grpc/proto/zevent/v1/feed.proto
@@ -601,8 +613,8 @@ message HeadResponse { uint64 head = 1; string epoch = 2; uint64 purged_through 
 
    | Suite | Checks |
    |---|---|
-   | `storage` (26 cases) | the sequencing contract: commit-order gap (50 concurrent transactions with random commit delays, some held open, some rolled back, a live reader), gapless and immutable `seq`, only committed events sequenced; read contract and envelope round trip; exclusive leases and cursor locks; parking visibility; purge respects acks and keeps the head; epochs and notifications; consumer outage (exactly once); duplicates after reconnect skipped; concurrent subscribers of one consumer; batched apply (exactly once; a failure inside a batch falls back to one event at a time); crash mid-apply ×1000 (a handler that hangs at planned points, a store that crashes right before or after its N-th operation, and random aborts: effect and cursor never diverge); sequencer failover (crash < 5 s, graceful < 2 s, no gaps); poison and transient failures → park → per-aggregate blocking → replay; filtered checkpoints; epoch mismatch (three variants); retention boundary; cursor reset |
-   | `transport` (9 cases) | network drops in a loop (no loss, no duplicate effects); identity and ACL enforced; backpressure with a slow consumer; heartbeats; reconnect with exponential backoff and jitter; acks reach the producer; ordered delivery and checkpoint promise; head and snapshot |
+   | `storage` (28 cases) | the sequencing contract: commit-order gap (50 concurrent transactions with random commit delays, some held open, some rolled back, a live reader), gapless and immutable `seq`, only committed events sequenced; read contract and envelope round trip; exclusive leases and cursor locks; parking visibility; purge respects acks and keeps the head; epochs and notifications; consumer outage (exactly once); duplicates after reconnect skipped; concurrent subscribers of one consumer; batched apply (exactly once; a failure inside a batch falls back to one event at a time); crash mid-apply ×1000 (a handler that hangs at planned points, a store that crashes right before or after its N-th operation, and random aborts: effect and cursor never diverge); sequencer failover (crash < 5 s, graceful < 2 s, no gaps); poison and transient failures → park → per-aggregate blocking → replay; filtered checkpoints; epoch mismatch (three variants); retention boundary; cursor reset; snapshot bootstrap (below retention, and for a new consumer) |
+   | `transport` (10 cases) | network drops in a loop (no loss, no duplicate effects); identity and ACL enforced; backpressure with a slow consumer; heartbeats; reconnect with exponential backoff and jitter; acks reach the producer; ordered delivery and checkpoint promise; head and snapshot; bootstrap through the transport |
 
 ## 18. Security and observability hooks
 

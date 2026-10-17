@@ -8,10 +8,11 @@ mod delivery;
 mod ports;
 
 pub use delivery::{
-    batched_apply_exactly_once, batched_apply_poison_falls_back, checkpoint_skips_filtered,
-    concurrent_subscribers_same_consumer, consumer_outage_exactly_once, crash_mid_apply,
-    duplicate_after_reconnect_skipped, epoch_learned_on_first_subscribe, epoch_mismatch_detected,
-    poison_park_replay, reset_cursor_replays, sequencer_failover, start_below_retention_rejected,
+    batched_apply_exactly_once, batched_apply_poison_falls_back, bootstrap_beyond_retention,
+    bootstrap_new_consumer, checkpoint_skips_filtered, concurrent_subscribers_same_consumer,
+    consumer_outage_exactly_once, crash_mid_apply, duplicate_after_reconnect_skipped,
+    epoch_learned_on_first_subscribe, epoch_mismatch_detected, poison_park_replay,
+    reset_cursor_replays, sequencer_failover, start_below_retention_rejected,
     transient_retry_then_park,
 };
 pub use ports::{
@@ -50,6 +51,8 @@ pub const CASES: &[&str] = &[
     "epoch_mismatch_detected",
     "start_below_retention_rejected",
     "reset_cursor_replays",
+    "bootstrap_beyond_retention",
+    "bootstrap_new_consumer",
 ];
 
 /// Runs every storage case against stores from `factory`. Needs a
@@ -82,4 +85,6 @@ pub async fn run_all<F: StoreFactory>(factory: F) {
     epoch_mismatch_detected(f).await;
     start_below_retention_rejected(f).await;
     reset_cursor_replays(f).await;
+    bootstrap_beyond_retention(f).await;
+    bootstrap_new_consumer(f).await;
 }

@@ -2,7 +2,7 @@
 
 **Reliable, push-based events between services, without a message broker.** A Rust library.
 
-> Status: **0.1.0, unreleased.** The core, the in-memory adapter and the conformance testkit are implemented (milestones ZE1–ZE2). The Postgres and gRPC adapters are next (ZE3–ZE4). Read [`DESIGN.md`](DESIGN.md) for the full design and [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for the build order.
+> Status: **0.1.0, unreleased.** All crates below are implemented and tested. Read [`DESIGN.md`](DESIGN.md) for the full design and [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for the build order.
 
 ## What it does
 
@@ -25,9 +25,10 @@ At modest volume (up to hundreds of events per second per service), the database
 | Crate | Folder | What it is | Optional? |
 |---|---|---|---|
 | `z-event` | `core/` | Protocol, `Producer`, `Subscriber`, storage and transport **ports** (traits), in-process transport. No database or network dependencies | required |
-| `z-event-postgres` | `adapters/postgres/` | Storage adapter for PostgreSQL (sqlx): outbox, sequencer, LISTEN/NOTIFY, cursors, dead letters, embedded migrations. **Planned (ZE3)** | use it, or write your own |
-| `z-event-grpc` | `adapters/grpc/` | Transport adapter for gRPC (tonic): a feed service you **mount on your own server**, a client on **your own channel**, or turnkey standalone helpers. **Planned (ZE4)** | use it, or write your own (e.g. HTTP/SSE) |
+| `z-event-postgres` | `adapters/postgres/` | Storage adapter for PostgreSQL (sqlx): outbox, sequencer, LISTEN/NOTIFY, cursors, dead letters, embedded migrations | use it, or write your own |
+| `z-event-grpc` | `adapters/grpc/` | Transport adapter for gRPC (tonic): a feed service you **mount on your own server**, a client on **your own channel**, or turnkey standalone helpers; mTLS or bearer-token identity | use it, or write your own (e.g. HTTP/SSE) |
 | `z-event-memory` | `adapters/memory/` | In-memory storage: the reference implementation, for tests and examples | dev/test |
+| `z-event-cli` | `cli/` | Operations CLI on PostgreSQL: head, consumers, parked events, cursors, epochs, migrations. Its commands are a library, so a service can add them to its own binary (with `parked replay`) | optional |
 | `z-event-testkit` | `testkit/` | Conformance suites that every storage or transport adapter must pass | dev/test |
 
 ## Usage sketch
@@ -56,18 +57,27 @@ Subscriber::builder(store, z_event_grpc::Client::new(channel), CreateInvoice)
     .spawn();
 ```
 
-A complete, runnable version on the in-memory adapter is in [`examples/in-process`](examples/in-process/src/main.rs): `cargo run -p z-event-example-in-process`.
+Runnable examples:
+- [`examples/in-process`](examples/in-process/src/main.rs): both services in one process on the in-memory adapter. `cargo run -p z-event-example-in-process`.
+- [`examples/split`](examples/split/src/main.rs): orders and billing as two processes, on PostgreSQL and gRPC. `DATABASE_URL=… cargo run -p z-event-example-split -- orders` in one terminal and `… -- billing` in another.
+
+## Guides
+
+- [`docs/operating.md`](docs/operating.md): deployment, settings, monitoring and runbooks (stuck sequencer, parked events, restoring from a backup, new consumers).
+- [`docs/writing-an-adapter.md`](docs/writing-an-adapter.md): the port contracts and how to prove a storage or transport adapter with the conformance suites.
 
 ## Development
 
 ```sh
-cargo test --workspace --all-features      # unit tests, doctests, both conformance suites on the memory adapter
+cargo test --workspace --all-features      # unit tests, doctests, conformance suites (memory and PostgreSQL)
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 bash scripts/check-core-deps.sh            # the core must not depend on a database, gRPC or an adapter
 ZEVENT_TESTKIT_SCALE=10 cargo test --release -p z-event-memory --test conformance   # stress
 ```
 
 `ZEVENT_TESTKIT_SEED` reproduces a randomised conformance run (the seed is printed on every run).
+
+The PostgreSQL tests start `postgres:13-alpine` and `postgres:16-alpine` containers through testcontainers, so they need a running Docker daemon (set `DOCKER_HOST` if its socket is not `/var/run/docker.sock`, e.g. with OrbStack or Colima). Set `ZEVENT_PG_URL=postgres://…` to run them against an existing server instead; every store gets its own fresh schema.
 
 ## Guarantees in one table
 

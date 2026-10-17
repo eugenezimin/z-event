@@ -217,7 +217,7 @@ impl<S: OutboxStore> FeedSource<S> {
         };
         let store = &self.producer.store;
         let head = store.head().await.map_err(unavailable)?;
-        let mut tx = store.begin().await.map_err(unavailable)?;
+        let mut tx = store.begin_snapshot().await.map_err(unavailable)?;
         let events = snapshotter
             .snapshot_erased(&mut tx, &request)
             .await

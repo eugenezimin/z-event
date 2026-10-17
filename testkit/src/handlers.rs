@@ -13,7 +13,8 @@ pub const EFFECT: &str = "Effect";
 /// **consumer store's own outbox**, in the handler's transaction. The
 /// effect is therefore atomic with the cursor, and the suite can count
 /// effects through the ports alone. The effect's aggregate is
-/// `effect/<source seq>`.
+/// `effect/<source seq>`, or `snapshot/<aggregate>` for `*Snapshot` events
+/// (which all carry the snapshot's position).
 ///
 /// ```
 /// use z_event::OutboxStore;
@@ -37,13 +38,56 @@ impl<S> EffectHandler<S> {
 
 impl<S: OutboxStore> Handler<S> for EffectHandler<S> {
     async fn handle(&self, tx: &mut S::Tx, ev: &Event) -> Result<(), HandlerError> {
-        let effect = NewEvent::new(EFFECT, format!("effect/{}", ev.seq.get()), 1, Vec::new())
+        let aggregate = if ev.event_type.ends_with("Snapshot") {
+            format!("snapshot/{}", ev.aggregate)
+        } else {
+            format!("effect/{}", ev.seq.get())
+        };
+        let effect = NewEvent::new(EFFECT, aggregate, 1, Vec::new())
             .header("source_id", ev.id.to_string())
             .header("source_aggregate", ev.aggregate.clone());
         self.store
             .append(tx, &[effect])
             .await
             .map_err(HandlerError::transient)
+    }
+}
+
+/// Answers snapshot requests with one `<type>Snapshot` event per listed
+/// aggregate of each requested type (`orders` → `ordersSnapshot`).
+#[derive(Clone, Debug, Default)]
+pub struct FixedSnapshot {
+    aggregates: Vec<String>,
+}
+
+impl FixedSnapshot {
+    /// Snapshots these aggregates.
+    pub fn new<I, X>(aggregates: I) -> Self
+    where
+        I: IntoIterator<Item = X>,
+        X: Into<String>,
+    {
+        FixedSnapshot {
+            aggregates: aggregates.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl<S: Store> z_event::Snapshotter<S> for FixedSnapshot {
+    async fn snapshot(
+        &self,
+        _tx: &mut S::Tx,
+        request: &z_event::SnapshotRequest,
+    ) -> Result<Vec<NewEvent>, z_event::BoxError> {
+        Ok(request
+            .aggregate_types
+            .iter()
+            .flat_map(|t| {
+                self.aggregates
+                    .iter()
+                    .map(move |a| NewEvent::new(format!("{t}Snapshot"), a.clone(), 1, Vec::new()))
+            })
+            .collect())
     }
 }
 

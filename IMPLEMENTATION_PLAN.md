@@ -71,7 +71,7 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
   - `cargo nextest` (CI profile), `cargo deny` and `actionlint` pass locally.
 - `PeerIdentity` moved to the transport adapters (core keeps `PeerId`); `z-event-grpc` defines it in ZE4.
 
-### ZE3. Postgres adapter (`z-event-postgres`). Size: M (1–1.5 weeks)
+### ZE3. Postgres adapter (`z-event-postgres`). Size: M (1–1.5 weeks). ✅ Done
 
 **Tasks:**
 1. Embedded migrations with their own history table; `migrate(&pool)`; unqualified table names (works per schema via `search_path`).
@@ -86,7 +86,13 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 - two schemas in one database run independent feeds without cross-talk;
 - the sequencer failover test passes with two processes.
 
-### ZE4. gRPC adapter (`z-event-grpc`). Size: M (1–1.5 weeks)
+**Outcome of ZE3:**
+- `z-event-postgres` on sqlx 0.8 (the same as z-auth). Statements are schema-qualified, migrations are embedded (`z_event_postgres::migrate(&pool, schema)`), and the advisory-lock lease runs on a dedicated connection that also carries the sequencer statement (fencing).
+- The storage suite (26 cases) passes on PostgreSQL 13 and 16 in testcontainers, and the transport suite passes on PostgreSQL 16. Adapter tests: two schemas in one database without cross-talk; idempotent and concurrent migrations; host writes sharing the transaction; a dropped lease freeing leadership; the notification payloads.
+- The sequencer failover case runs two producers with separate database sessions in one test process. From PostgreSQL's point of view that is the same as two processes.
+- Finding: with a networked database, a killed task's `COMMIT` can still land after the task is gone. The crash test now reads the cursor under `lock_cursor` (`World::settled`), so it compares effects and cursor only after in-flight transactions finish.
+
+### ZE4. gRPC adapter (`z-event-grpc`). Size: M (1–1.5 weeks). ✅ Done
 
 **Tasks:**
 1. `proto/zevent/v1/feed.proto` (DESIGN §16); codegen via `tonic-build` + `protox` in `build.rs` at build time (decided in ZE1: no system `protoc`, nothing generated is committed).
@@ -102,7 +108,13 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 - the service works both mounted on an existing tonic server and standalone;
 - commit → applied latency is p95 < 100 ms in the split example.
 
-### ZE5. Snapshots, epochs, retention operations, CLI. Size: M (1 week)
+**Outcome of ZE4:**
+- `z-event-grpc` on tonic 0.14. Code is generated with `tonic-prost-build` + `protox` (no `protoc`). It provides `feed_service` for host servers, `Client` (a `Transport`) with metadata and bearer tokens, `serve_standalone` / `serve_standalone_with_shutdown`, and `MtlsIdentity`, `TokenIdentity` and `MetadataIdentity`.
+- Errors map to status codes, with details in metadata. A start below retention uses `OUT_OF_RANGE`, so it can be told apart from an epoch mismatch.
+- The transport suite passes over real HTTP/2. Delivery is exactly once through a TCP proxy that cuts connections. Mutual TLS (generated CA and certificates) and bearer tokens on a host-built server are tested. Commit → applied p95 is under 1 ms locally, against the 100 ms target.
+- `examples/split` runs orders and billing as two OS processes on PostgreSQL. Its test spawns both binaries against a container.
+
+### ZE5. Snapshots, epochs, retention operations, CLI. Size: M (1 week). ✅ Done
 
 **Tasks:**
 1. `Snapshot` end-to-end: the host's `Snapshotter` runs in a consistent read (`REPEATABLE READ` in Postgres) → `*Snapshot` events → `Checkpoint(S)`; the Subscriber's bootstrap mode is "snapshot then subscribe from S".
@@ -111,6 +123,12 @@ ZE3 and ZE4 run in parallel once ZE2 is done. A host project needs **ZE1–ZE4**
 4. Docs: an "operating z-event" guide (alerts, runbooks) and a "writing an adapter" guide.
 
 **Done when:** a new consumer bootstraps beyond the retention window, a restored producer is detected, and every CLI command has an integration test.
+
+**Outcome of ZE5:**
+- Snapshot bootstrap in the subscriber: `bootstrap_from_snapshot` for new consumers and for cursors below retention, plus `Subscriber::bootstrap`. Snapshots read through `Store::begin_snapshot` (PostgreSQL: `REPEATABLE READ READ ONLY`). New conformance cases cover bootstrap below retention, for a new consumer, and through a transport, on memory, PostgreSQL and gRPC.
+- Epochs: explicit rotation (`epoch rotate`) and automatic detection were already covered by `epoch_mismatch_detected`. The restore runbook is in `docs/operating.md`.
+- `z-event-cli`: `migrate`, `head`, `consumers list|remove`, `parked list|resolve|replay`, `cursor show|reset`, `epoch show|rotate`. The commands are a library over the ports. `parked replay` runs the service's handlers, so a service mounts the commands in its own binary with its `Subscriber`; the generic binary explains this. Every command has an integration test against PostgreSQL, plus a smoke test of the binary.
+- Guides: `docs/operating.md` and `docs/writing-an-adapter.md`.
 
 ---
 

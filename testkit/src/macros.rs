@@ -22,7 +22,8 @@ macro_rules! storage_suite {
             batched_apply_poison_falls_back, crash_mid_apply, sequencer_failover,
             poison_park_replay, transient_retry_then_park, checkpoint_skips_filtered,
             epoch_learned_on_first_subscribe, epoch_mismatch_detected,
-            start_below_retention_rejected, reset_cursor_replays
+            start_below_retention_rejected, reset_cursor_replays, bootstrap_beyond_retention,
+            bootstrap_new_consumer
         ]);
     };
 }
@@ -44,7 +45,7 @@ macro_rules! transport_suite {
         $crate::__cases!(transport_conformance, transport, (&$factory, &$harness); [
             network_drop_loop, identity_enforced, acl_enforced, backpressure_slow_consumer,
             heartbeats, reconnect_with_backoff, acks_reach_producer, ordered_delivery,
-            head_and_snapshot
+            head_and_snapshot, bootstrap_over_transport
         ]);
     };
 }
