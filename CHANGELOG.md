@@ -20,3 +20,4 @@ All notable changes to this project are documented here. The format follows [Kee
 - `z-event-testkit`, with 28 storage and 10 transport conformance cases, fault injectors and the `storage_suite!` and `transport_suite!` macros.
 - `examples/in-process`, with two services in one process, and `examples/split`, with two processes on PostgreSQL and gRPC.
 - Documentation covering the architecture in `DESIGN.md`, a usage guide, an operations guide and a guide for adapter authors.
+- `docs/scenarios.md`, which walks through deployment topologies with draw.io component diagrams in `docs/diagrams` and sequence diagrams, and `scripts/export-diagrams.sh`, which regenerates the diagram images.
