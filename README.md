@@ -46,10 +46,10 @@ At modest volume, up to hundreds of events per second per service, the database 
 
 ## A first example
 
-The producer appends an event in the transaction that confirms the order.
+The producer appends an event in the transaction that confirms the order. The z-event tables live in a schema of their own, `orders_zevent`, inside the same database as the business schema `orders`, because both must commit in one transaction.
 
 ```rust
-let store = z_event_postgres::migrate(&pool, "orders").await?;
+let store = z_event_postgres::migrate(&pool, "orders_zevent").await?;
 let producer = Producer::new(store.clone(), ProducerConfig::new("orders"));
 let _running = producer.start();
 

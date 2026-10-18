@@ -4,13 +4,15 @@ This guide is for the people who deploy and run services that use z-event. It co
 
 ## 1. Deployment
 
-Each service keeps the z-event tables in its own PostgreSQL schema, next to its business tables. Services may share a database server and a connection pool, and z-event never reads another service's schema.
+Each service has its own PostgreSQL database and keeps the z-event tables in a schema of their own inside it, such as `orders_zevent` next to the business schema `orders`. The z-event tables cannot move to another database, because the outbox row and the cursor commit in the service's own transactions. Services may share a database server, and z-event never reads another service's schemas.
 
-Every replica runs the migrations at startup. They create or upgrade the tables in the service's schema, record what they did in `zevent_migrations`, and are safe to run from several replicas at the same moment.
+Every replica runs the migrations at startup. They create or upgrade the tables in the service's z-event schema, record what they did in `zevent_migrations`, and are safe to run from several replicas at the same moment. They create the schema if it is missing, which needs the `CREATE` right on the database. Without that right, a database administrator creates the schema first.
 
 ```rust
-let store = z_event_postgres::migrate(&pool, "orders").await?;
+let store = z_event_postgres::migrate(&zevent_pool, "orders_zevent").await?;
 ```
+
+Give z-event a connection pool of its own on the service's database, and begin business transactions on the service's pool, as [guide.md section 4](guide.md#4-the-producer-on-postgresql) shows. On the producer side a few connections are enough for the feed reads, acknowledgements and retention, and the sequencer lease and the notification listener add one dedicated connection each per replica. On the consumer side the subscriber applies events through z-event's pool, so size it for the event rate.
 
 Every replica of a producing service starts the producer. Only one replica at a time stamps events, the sequencer leader, which holds a PostgreSQL advisory lock. The others try to take over every second and do so as soon as the leader's database connection goes away. Every replica can serve the feed to consumers.
 
@@ -27,12 +29,13 @@ flowchart LR
         B1["replica 1<br/>subscriber"]
         B2["replica 2<br/>subscriber on standby"]
     end
-    PG[("PostgreSQL<br/>schemas orders and billing")]
-    O1 --- PG
-    O2 --- PG
-    O3 --- PG
-    B1 --- PG
-    B2 --- PG
+    ODB[("orders database<br/>schemas orders and orders_zevent")]
+    BDB[("billing database<br/>schemas billing and billing_zevent")]
+    O1 --- ODB
+    O2 --- ODB
+    O3 --- ODB
+    B1 --- BDB
+    B2 --- BDB
     B1 ==>|"gRPC stream through the load balancer"| O2
 ```
 
@@ -69,16 +72,16 @@ z-event reports through the `metrics` facade and through `tracing`. Install the 
 
 Every applied event runs in a `z_event.apply` span that carries the correlation id of the user's request, so one trace shows the request and every effect it caused across services.
 
-The `z-event-cli` binary gives a quick look at any schema. It needs the database URL, through `--database-url` or `DATABASE_URL`, and the schema, through `--schema` or `ZEVENT_SCHEMA`.
+The `z-event-cli` binary gives a quick look at any schema. It needs the database URL, through `--database-url` or `DATABASE_URL`, and the service's z-event schema, through `--schema` or `ZEVENT_SCHEMA`.
 
 ```text
-z-event-cli --schema orders head
-z-event-cli --schema orders consumers list
-z-event-cli --schema billing cursor show --consumer billing --producer orders
-z-event-cli --schema billing parked list --consumer billing --producer orders
+z-event-cli --schema orders_zevent head
+z-event-cli --schema orders_zevent consumers list
+z-event-cli --schema billing_zevent cursor show --consumer billing --producer orders
+z-event-cli --schema billing_zevent parked list --consumer billing --producer orders
 ```
 
-Producer-side commands such as `head`, `consumers` and `epoch` act on the producer's schema. Consumer-side commands such as `cursor` and `parked` act on the consumer's schema.
+Producer-side commands such as `head`, `consumers` and `epoch` act on the producer's z-event schema. Consumer-side commands such as `cursor` and `parked` act on the consumer's z-event schema.
 
 ```mermaid
 flowchart TD
@@ -107,8 +110,8 @@ Restarting the producing service is always safe. Committed events are never lost
 Compare the consumer's cursor with the producer's head to see how far behind it is.
 
 ```text
-z-event-cli --schema billing cursor show --consumer billing --producer orders
-z-event-cli --schema orders head
+z-event-cli --schema billing_zevent cursor show --consumer billing --producer orders
+z-event-cli --schema orders_zevent head
 ```
 
 A slow handler is the usual cause. For projections that apply many small events, raise `batch_size`. For handlers that start slow external work, let the handler write a job row and scale the workers instead.
@@ -117,10 +120,10 @@ Lag never slows the producer down. It keeps appending, and the consumer catches 
 
 ### 4.3 Events are parked
 
-The `feed_dead_letters` gauge is above zero. List the parked events in the consumer's schema.
+The `feed_dead_letters` gauge is above zero. List the parked events in the consumer's z-event schema.
 
 ```text
-z-event-cli --schema billing parked list --consumer billing --producer orders
+z-event-cli --schema billing_zevent parked list --consumer billing --producer orders
 ```
 
 The first failed event of an aggregate shows how many attempts were made and the last error. Later events of the same aggregate show zero attempts, because they were parked behind it without running the handler. That preserves the aggregate's order while other aggregates keep flowing.
@@ -132,21 +135,23 @@ Then replay. Replay runs the service's own handlers, so it runs inside the servi
 To drop an event on purpose, mark it resolved without running its handler. Do this only when the effect is known to be unwanted.
 
 ```text
-z-event-cli --schema billing parked resolve --consumer billing --producer orders --seq 1882
+z-event-cli --schema billing_zevent parked resolve --consumer billing --producer orders --seq 1882
 ```
 
 ### 4.4 Restoring a producer from a backup
 
 A restored producer's feed goes back in time. The events after the backup point are gone and new events will reuse their positions, so consumers must not continue as if nothing happened.
 
+Always restore the whole database, the business schema and the z-event schema from the same backup. Restoring one schema alone leaves events that describe changes which no longer exist, or changes without their events, and no epoch check can detect that.
+
 ```mermaid
 flowchart TD
-    A["restore the orders database"] --> B["z-event-cli --schema orders epoch rotate"]
+    A["restore the orders database"] --> B["z-event-cli --schema orders_zevent epoch rotate"]
     B --> C["start orders again"]
     C --> D["every consumer of orders stops with EpochMismatch"]
     D --> E["for each consumer, decide what happens to data derived from the lost events"]
     E --> F["usually rebuild the consumer's projection"]
-    F --> G["z-event-cli --schema billing cursor reset --consumer billing --producer orders --seq 0 --clear-epoch"]
+    F --> G["z-event-cli --schema billing_zevent cursor reset --consumer billing --producer orders --seq 0 --clear-epoch"]
     G --> H{"consumer uses bootstrap_from_snapshot?"}
     H -->|"yes"| I["it starts from the producer's current state"]
     H -->|"no"| J["it replays the retained feed"]
@@ -156,7 +161,7 @@ Rotate the epoch before starting the restored service. If that step is forgotten
 
 ### 4.5 Restoring a consumer from a backup
 
-Nothing special is needed. The consumer's cursor lives in the same database as its data, so both are restored together. It subscribes again from the restored cursor and the producer sends everything since.
+Nothing special is needed as long as the whole database is restored, never the business schema or the z-event schema alone. The consumer's cursor lives in the same database as its data, so both are restored together. It subscribes again from the restored cursor and the producer sends everything since.
 
 If the restored position is older than the producer's retention window, the subscriber stops with `BeyondRetention`. With `bootstrap_from_snapshot` it bootstraps from the producer's snapshot instead.
 
@@ -169,7 +174,7 @@ Either let it replay, which means it subscribes from position zero and catches u
 Registered consumers hold back retention until they acknowledge. Remove a retired consumer so the producer can purge its old events.
 
 ```text
-z-event-cli --schema orders consumers remove search
+z-event-cli --schema orders_zevent consumers remove search
 ```
 
 ### 4.8 Replaying a consumer from a position
@@ -177,7 +182,7 @@ z-event-cli --schema orders consumers remove search
 Reset its cursor, before it starts or while it runs. A running subscriber notices and subscribes again from the new position.
 
 ```text
-z-event-cli --schema search cursor reset --consumer search --producer orders --seq 1200
+z-event-cli --schema search_zevent cursor reset --consumer search --producer orders --seq 1200
 ```
 
 Handlers that check `aggregate_version` make this safe over data they have already applied.
@@ -190,4 +195,4 @@ Every consumer authenticates with a client certificate or a token. The consumer 
 
 Producers keep personal data out of events unless the consumer is allowed to see it, because z-event never looks at payloads or headers.
 
-Each service's database user needs rights only in its own schema.
+Each service's database user needs rights only in its own two schemas, the business schema and the z-event schema. An operations role for `z-event-cli` needs rights on the z-event schema alone and never sees business data.
