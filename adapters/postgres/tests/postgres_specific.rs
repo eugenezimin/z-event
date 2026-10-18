@@ -8,7 +8,9 @@ mod support;
 use std::time::Duration;
 
 use futures::StreamExt;
-use z_event::{NewEvent, Notification, OutboxStore, Producer, ProducerConfig, Seq, Store};
+use z_event::{
+    NewEvent, Notification, OutboxStore, Producer, ProducerConfig, Seq, Store, TypeFilter,
+};
 use z_event_postgres::{PgError, PgStore};
 
 fn fast(name: &str) -> ProducerConfig {
@@ -167,6 +169,78 @@ async fn host_writes_and_events_share_the_transaction() {
         .await
         .unwrap();
     assert_eq!((orders, store.unsequenced().await.unwrap()), (1, 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_pool_and_business_schema_carry_the_event() {
+    // The recommended layout: business tables in their own schema, the
+    // z-event tables in another, and the host's own pool for requests.
+    let db = support::db("16-alpine").await;
+    let store = db.store().await;
+    let app = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with((*db.pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let business = format!("{}_app", store.schema());
+    sqlx::query(&format!("CREATE SCHEMA {business}"))
+        .execute(&app)
+        .await
+        .unwrap();
+    let table = format!("{business}.orders");
+    sqlx::query(&format!(
+        "CREATE TABLE {table} (id text PRIMARY KEY, status text NOT NULL)"
+    ))
+    .execute(&app)
+    .await
+    .unwrap();
+    let insert = format!("INSERT INTO {table} VALUES ($1, 'confirmed')");
+    let producer = Producer::new(store.clone(), fast("orders"));
+    let running = producer.start();
+
+    // Rolled back on the host's pool: neither the order nor the event exists.
+    let mut tx = app.begin().await.unwrap();
+    sqlx::query(&insert)
+        .bind("o1")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    producer
+        .append(
+            &mut tx,
+            NewEvent::new("OrderConfirmed", "orders/o1", 1, "{}"),
+        )
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+
+    // Committed on the host's pool: the sequencer is woken and stamps it.
+    let mut tx = app.begin().await.unwrap();
+    sqlx::query(&insert)
+        .bind("o2")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    producer
+        .append(
+            &mut tx,
+            NewEvent::new("OrderConfirmed", "orders/o2", 1, "{}"),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    wait_head(&store, 1).await;
+
+    let orders: Vec<String> = sqlx::query_scalar(&format!("SELECT id FROM {table}"))
+        .fetch_all(&app)
+        .await
+        .unwrap();
+    let events = store.read(Seq::ZERO, &TypeFilter::All, 10).await.unwrap();
+    assert_eq!(orders, ["o2"]);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].aggregate, "orders/o2");
+    assert_eq!(store.head().await.unwrap().seq, Seq(1));
+    running.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -9,10 +9,20 @@
 //! - **Transactions.** `Store::Tx` is `sqlx::Transaction<'static, Postgres>`.
 //!   The host runs its own business SQL on the same transaction, which makes
 //!   "change + event" and "effect + cursor" atomic.
-//! - **One schema per service.** A [`PgStore`] owns the z-event tables in
-//!   one schema (`outbox`, `feed_meta`, `feed_consumers`, `feed_cursors`,
-//!   `dead_letters`). Queries are schema-qualified, so they do not depend on
-//!   the connection's `search_path`. Several services can share a database.
+//! - **A schema of its own, in the service's database.** A [`PgStore`] owns
+//!   the z-event tables in one schema (`outbox`, `feed_meta`,
+//!   `feed_consumers`, `feed_cursors`, `dead_letters`, plus fixed index,
+//!   function and trigger names). Use a dedicated schema such as
+//!   `orders_zevent` next to the business schema `orders`, so these names
+//!   never collide with the service's own objects. It must be the same
+//!   database, because the outbox row and the cursor commit in the
+//!   business transaction. Queries are schema-qualified, so they do not
+//!   depend on the connection's `search_path`.
+//! - **Pools.** Any transaction on the same database can carry
+//!   [`append`](z_event::Producer::append), so the service may begin it on
+//!   its own pool and give the store a small pool for z-event's background
+//!   work (sequencer, feed reads, acks, retention). The sequencer lease and
+//!   the `LISTEN` connection are dedicated connections on top of the pool.
 //! - **Migrations** are embedded: [`PgStore::migrate`] creates or upgrades
 //!   the schema, with its own history table (`zevent_migrations`), so it
 //!   never clashes with the host's migrations. Safe to run from several
@@ -36,7 +46,8 @@
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! let pool = PgPoolOptions::new().connect("postgres://localhost/orders").await?;
-//! let store = PgStore::new(pool, "orders")?;
+//! // Business tables live in schema `orders`, z-event's in `orders_zevent`.
+//! let store = PgStore::new(pool, "orders_zevent")?;
 //! store.migrate().await?;
 //!
 //! let producer = Producer::new(store.clone(), ProducerConfig::new("orders"));
@@ -107,9 +118,10 @@ pub(crate) struct Inner {
 /// use z_event_postgres::PgStore;
 ///
 /// # async fn run(pool: PgPool) -> Result<(), z_event_postgres::PgError> {
-/// // One store per service schema; services may share the pool and database.
-/// let orders = PgStore::new(pool.clone(), "orders")?;
-/// let billing = PgStore::new(pool, "billing")?;
+/// // One store per service, each in the service's z-event schema. Services
+/// // normally have a database each; for tests they may share one.
+/// let orders = PgStore::new(pool.clone(), "orders_zevent")?;
+/// let billing = PgStore::new(pool, "billing_zevent")?;
 /// orders.migrate().await?;
 /// billing.migrate().await?;
 /// # Ok(())
@@ -218,7 +230,7 @@ impl Store for PgStore {
 ///
 /// ```no_run
 /// # async fn run(pool: sqlx::PgPool) -> Result<(), z_event_postgres::PgError> {
-/// let store = z_event_postgres::migrate(&pool, "orders").await?;
+/// let store = z_event_postgres::migrate(&pool, "orders_zevent").await?;
 /// # let _ = store;
 /// # Ok(())
 /// # }

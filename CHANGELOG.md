@@ -21,3 +21,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `examples/in-process`, with two services in one process, and `examples/split`, with two processes on PostgreSQL and gRPC.
 - Documentation covering the architecture in `DESIGN.md`, a usage guide, an operations guide and a guide for adapter authors.
 - `docs/scenarios.md`, which walks through deployment topologies with draw.io component diagrams in `docs/diagrams` and sequence diagrams, and `scripts/export-diagrams.sh`, which regenerates the diagram images.
+
+### Changed
+
+- The z-event tables are recommended to live in a schema of their own inside the service's database, such as `orders_zevent` next to the business schema `orders`, with business transactions begun on the service's own pool. `examples/split`, the doc comments of `z-event-postgres` and `z-event-cli`, and the documentation follow this layout, and a PostgreSQL test covers it.
