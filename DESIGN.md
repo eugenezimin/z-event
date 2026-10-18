@@ -599,30 +599,45 @@ The caller's identity in-process is the consumer name, because both sides run in
 
 `PgStore` implements all storage ports on PostgreSQL with sqlx 0.8, the same version as z-auth, so a host can share one transaction type between both libraries. `Store::Tx` is `sqlx::Transaction<'static, Postgres>`, and the host runs its own SQL on the same transaction.
 
-Each service keeps the z-event tables in its own schema, next to its business tables, and several services can share one database and one connection pool. Statements are schema-qualified, so they do not depend on the connection's `search_path`. A schema name is a plain identifier of at most 40 characters.
+Each service keeps its z-event tables in a schema of their own inside the service's database, for example `orders_zevent` next to the business schema `orders`. They have to be in the same database, because the outbox row commits in the business transaction and the cursor commits in the handler's transaction, and a transaction cannot span two databases. A separate schema keeps the fixed names `outbox`, `feed_meta`, `feed_consumers`, `feed_cursors`, `dead_letters` and their indexes away from the service's own objects and out of the way of migration tools that compare a schema with its expected state. Keeping them in the business schema also works when nothing collides. Statements are schema-qualified, so they do not depend on the connection's `search_path`. A schema name is a plain identifier of at most 40 characters, because it becomes part of the notification channel names.
 
 ```rust
-let store = z_event_postgres::migrate(&pool, "orders").await?;
+let store = z_event_postgres::migrate(&zevent_pool, "orders_zevent").await?;
 ```
+
+Any transaction on the same database can carry an append, so a service can begin its business transactions on its own connection pool and give `PgStore` a small pool of its own for the sequencer, feed reads, acknowledgements and retention. The sequencer lease and the notification listener each hold one dedicated connection on top of that pool. A schema separates names only, and both schemas share the database's memory, disk and write-ahead log, so the pool is what keeps the load of the two apart. Several services can share one database server, and tests may put several services into one database, as long as every service has its own schemas.
 
 Migrations are embedded in the crate and recorded in their own history table, `zevent_migrations`, so they never clash with the host's migrations. A transaction-scoped advisory lock serialises migrations, so several replicas can run them at startup.
 
 ```mermaid
-flowchart TB
-    subgraph DB["one PostgreSQL database"]
-        subgraph S1["schema orders"]
+flowchart LR
+    REQ["orders request transaction<br/>on the app pool"]
+    subgraph ODB["orders database"]
+        subgraph OS["schema orders"]
             T1["orders (host)"]
+        end
+        subgraph OZ["schema orders_zevent"]
             O1["outbox, feed_meta, feed_consumers"]
             C1["feed_cursors, dead_letters"]
         end
-        subgraph S2["schema billing"]
+    end
+    LST["LISTEN connection<br/>of the orders producer"]
+    subgraph BDB["billing database"]
+        subgraph BS["schema billing"]
             T2["invoices (host)"]
+        end
+        subgraph BZ["schema billing_zevent"]
             C2["feed_cursors, dead_letters"]
             O2["outbox, feed_meta, feed_consumers"]
         end
     end
-    O1 -.->|"NOTIFY on zevent_orders_appended and zevent_orders_sequenced"| LST["LISTEN connection of the orders producer"]
+    REQ --> T1
+    REQ --> O1
+    O1 -.->|"NOTIFY on zevent_orders_zevent_appended<br/>and zevent_orders_zevent_sequenced"| LST
+    LST ~~~ BDB
 ```
+
+The migrations create all five tables in every z-event schema. A service that only produces leaves its cursor tables empty, and a service that only consumes leaves its outbox empty.
 
 Appending is an `INSERT` with an empty position. An `AFTER INSERT` statement trigger calls `pg_notify('zevent_<schema>_appended', '')`, which PostgreSQL delivers on commit and folds into one notification per transaction. Channel names include the schema because notification channels are shared by the whole database.
 
