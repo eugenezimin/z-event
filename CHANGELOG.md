@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-29
+
 ### Added
 
 - The Cargo workspace, tooling configuration, CI and licences, MIT or Apache-2.0 at the user's option.
@@ -25,3 +27,6 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Changed
 
 - The z-event tables are recommended to live in a schema of their own inside the service's database, such as `orders_zevent` next to the business schema `orders`, with business transactions begun on the service's own pool. `examples/split`, the doc comments of `z-event-postgres` and `z-event-cli`, and the documentation follow this layout, and a PostgreSQL test covers it.
+
+[Unreleased]: https://github.com/eugenezimin/z-event/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/eugenezimin/z-event/releases/tag/v0.1.0
