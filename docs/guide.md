@@ -111,25 +111,28 @@ Every event also gets a ULID as its id when it is created. That id is the idempo
 
 ## 4. The producer on PostgreSQL
 
-A producing service creates its z-event tables in its own schema at startup and starts the producer once per process.
+A producing service creates its z-event tables at startup and starts the producer once per process. The tables go into a schema of their own, `orders_zevent`, in the same database as the service's business schema `orders`.
 
 ```rust
 use sqlx::postgres::PgPoolOptions;
 use z_event::{Producer, ProducerConfig};
 
-let pool = PgPoolOptions::new().max_connections(20).connect(&database_url).await?;
-let store = z_event_postgres::migrate(&pool, "orders").await?;
+let app_pool = PgPoolOptions::new().max_connections(20).connect(&database_url).await?;
+let zevent_pool = PgPoolOptions::new().max_connections(5).connect(&database_url).await?;
+let store = z_event_postgres::migrate(&zevent_pool, "orders_zevent").await?;
 let producer = Producer::new(store.clone(), ProducerConfig::new("orders"));
 let running = producer.start();
 ```
 
-`migrate` creates or upgrades the tables in the `orders` schema and is safe to run from every replica at the same time. `start` launches the sequencer, the notification listener and the retention job. Every replica calls it, and the replicas agree among themselves which one stamps events.
+Both schemas have to be in one database, because the event commits in the business transaction. The separate schema keeps z-event's fixed table names such as `outbox` away from the service's own tables and out of the way of its migration tools. The two pools point at the same database. Requests use `app_pool`, and `zevent_pool` serves only z-event's background work, the sequencer, feed reads, acknowledgements and retention, so that work never takes connections the requests need. One pool for both works too.
 
-Appending is part of the business transaction. The transaction type is sqlx's own, so the service runs its SQL on the same transaction.
+`migrate` creates or upgrades the tables in the `orders_zevent` schema and is safe to run from every replica at the same time. `start` launches the sequencer, the notification listener and the retention job. Every replica calls it, and the replicas agree among themselves which one stamps events.
+
+Appending is part of the business transaction. The transaction type is sqlx's own, so the service begins it on its own pool, runs its SQL on it and passes it to `append`.
 
 ```rust
-async fn confirm(store: &PgStore, producer: &Producer<PgStore>, id: &str, request_id: &str) -> Result<(), BoxError> {
-    let mut tx = store.begin().await?;
+async fn confirm(app_pool: &PgPool, producer: &Producer<PgStore>, id: &str, request_id: &str) -> Result<(), BoxError> {
+    let mut tx = app_pool.begin().await?;
     let row: (i64, i64) = sqlx::query_as("UPDATE orders.orders SET status = 'confirmed', version = version + 1 WHERE id = $1 RETURNING version, amount_cents")
         .bind(id)
         .fetch_one(&mut *tx)
@@ -138,7 +141,7 @@ async fn confirm(store: &PgStore, producer: &Producer<PgStore>, id: &str, reques
     let event = NewEvent::json("OrderConfirmed", format!("orders/{id}"), version as u64, &OrderConfirmed { order_id: id.into(), amount_cents })?
         .correlation(request_id);
     producer.append(&mut tx, event).await?;
-    store.commit(tx).await?;
+    tx.commit().await?;
     Ok(())
 }
 ```
@@ -228,7 +231,7 @@ The subscriber connects to the producer, reads the backlog, follows live events 
 use z_event::{Backoff, RetryPolicy, Subscriber};
 use z_event_grpc::Client;
 
-let billing_db = z_event_postgres::migrate(&pool, "billing").await?;
+let billing_db = z_event_postgres::migrate(&zevent_pool, "billing_zevent").await?;
 let orders = Client::connect("http://orders:50051", None).await?.bearer_token(&billing_token)?;
 let subscriber = Subscriber::builder(billing_db, orders, CreateInvoice)
     .consumer("billing")
@@ -239,6 +242,8 @@ let subscriber = Subscriber::builder(billing_db, orders, CreateInvoice)
     .build();
 let handle = subscriber.spawn();
 ```
+
+The subscriber begins its transactions on the store's pool, so the handler's writes to `billing.invoices` go through `zevent_pool` as well. That pool carries the apply work on the consumer side and should be sized for the event rate.
 
 `build` returns a `Subscriber`, which the service can keep for administration such as replays, and `spawn` starts it and returns a handle. The handle reports the status and stops the subscriber cleanly.
 
@@ -268,10 +273,10 @@ sqlx::query("INSERT INTO notifications.jobs (id, kind, payload) VALUES ($1, 'ord
 
 Suppose a deploy introduced a bug that fails for orders with a discount. The subscriber retries each failing event and then parks it, together with every later event of the same order, while all other orders keep flowing. The `feed_dead_letters` metric rises above zero and the alert fires.
 
-An operator lists the parked events from the consumer's schema.
+An operator lists the parked events from the consumer's z-event schema.
 
 ```text
-$ z-event-cli --schema billing parked list --consumer billing --producer orders
+$ z-event-cli --schema billing_zevent parked list --consumer billing --producer orders
 1882    orders/o902    OrderConfirmed    attempts 5    open    transient: discount column missing
 1890    orders/o902    OrderUpdated      attempts 0    open    parked behind an earlier event of orders/o902
 ```
@@ -421,15 +426,15 @@ For tests against PostgreSQL, the repository's own tests show the pattern. They 
 
 ## 11. The whole picture
 
-A typical deployment has several services, each with its own schema, its own feed and its own subscribers.
+A typical deployment has several services, each with its own database, its own feed and its own subscribers. In every database the business tables and the z-event tables have a schema each.
 
 ```mermaid
 flowchart LR
-    subgraph PG["PostgreSQL"]
-        SO["schema orders"]
-        SB["schema billing"]
-        SN["schema notifications"]
-        SS["schema search"]
+    subgraph DBS["PostgreSQL server"]
+        SO[("orders database<br/>orders, orders_zevent")]
+        SB[("billing database<br/>billing, billing_zevent")]
+        SN[("notifications database<br/>notifications, notifications_zevent")]
+        SS[("search database<br/>search, search_zevent")]
     end
     O["orders"] --- SO
     B["billing"] --- SB
@@ -442,4 +447,4 @@ flowchart LR
 
 Every arrow is one gRPC stream opened by the consumer. No service knows who consumes its feed, so adding a consumer never changes the producer.
 
-`examples/split` runs the first arrow for real, with `orders` and `billing` as separate processes on one PostgreSQL server. Its test starts a container, launches both binaries and checks that every order produced exactly one invoice.
+`examples/split` runs the first arrow for real, with `orders` and `billing` as separate processes, each with its own database on one PostgreSQL server. Its test starts a container, launches both binaries and checks that every order produced exactly one invoice.

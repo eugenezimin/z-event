@@ -7,9 +7,9 @@
 //! storage adapter. The `z-event-cli` binary runs them against PostgreSQL:
 //!
 //! ```text
-//! z-event-cli --database-url postgres://… --schema orders head
-//! z-event-cli --schema billing parked list --consumer billing --producer orders
-//! z-event-cli --schema orders epoch rotate        # after restoring from a backup
+//! z-event-cli --database-url postgres://… --schema orders_zevent head
+//! z-event-cli --schema billing_zevent parked list --consumer billing --producer orders
+//! z-event-cli --schema orders_zevent epoch rotate  # after restoring from a backup
 //! ```
 //!
 //! **Replaying parked events runs the service's own handlers**, which a
@@ -52,7 +52,8 @@ pub struct Cli {
     /// PostgreSQL connection URL.
     #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub database_url: String,
-    /// The schema holding the z-event tables (one per service).
+    /// The schema holding the z-event tables, one per service, such as
+    /// orders_zevent.
     #[arg(long, env = "ZEVENT_SCHEMA")]
     pub schema: String,
     /// What to do.

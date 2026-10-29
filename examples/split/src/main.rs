@@ -1,11 +1,17 @@
 //! orders → billing as two processes.
 //!
-//! - `orders` keeps orders in PostgreSQL (schema `orders`). Each
+//! - `orders` keeps orders in PostgreSQL (schema `orders`) and its z-event
+//!   tables in schema `orders_zevent` of the same database. Each
 //!   confirmation writes the order row and an `OrderConfirmed` event in one
-//!   transaction, and the feed is served over gRPC.
-//! - `billing` (schema `billing`) subscribes to the orders feed over gRPC
-//!   and writes one invoice per confirmed order, in the same transaction as
-//!   its cursor.
+//!   transaction, begun on the service's own pool, and the feed is served
+//!   over gRPC.
+//! - `billing` keeps invoices in schema `billing` and its cursor in
+//!   `billing_zevent`. It subscribes to the orders feed over gRPC and writes
+//!   one invoice per confirmed order, in the same transaction as its cursor.
+//!
+//! Each service gets a small second pool for z-event's background work
+//! (sequencer, feed reads, acks, retention, applying events), so it never
+//! competes with the request path for connections.
 //!
 //! ```text
 //! DATABASE_URL=postgres://… z-event-example-split orders  --listen 127.0.0.1:50051 --count 20
@@ -22,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres};
 use z_event::{
-    AllowAll, BoxError, Event, Handler, HandlerError, NewEvent, Producer, ProducerConfig, Store,
+    AllowAll, BoxError, Event, Handler, HandlerError, NewEvent, Producer, ProducerConfig,
     Subscriber,
 };
 use z_event_grpc::{Client, TokenIdentity, serve_standalone_with_shutdown};
@@ -42,20 +48,23 @@ fn arg(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-async fn pool() -> Result<PgPool, BoxError> {
+async fn pool(max_connections: u32) -> Result<PgPool, BoxError> {
     let url = std::env::var("DATABASE_URL").map_err(|_| "set DATABASE_URL")?;
     Ok(PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(max_connections)
         .connect(&url)
         .await?)
 }
 
 /// The producer: confirm `count` orders, serve the feed until Ctrl-C.
 async fn orders(listen: &str, count: u64) -> Result<(), BoxError> {
-    let pool = pool().await?;
-    let store = z_event_postgres::migrate(&pool, "orders").await?;
+    let app = pool(10).await?;
+    let store = z_event_postgres::migrate(&pool(4).await?, "orders_zevent").await?;
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS orders")
+        .execute(&app)
+        .await?;
     sqlx::query("CREATE TABLE IF NOT EXISTS orders.orders (id text PRIMARY KEY, amount_cents bigint NOT NULL)")
-        .execute(&pool)
+        .execute(&app)
         .await?;
     let producer = Producer::new(store.clone(), ProducerConfig::new("orders"));
     let running = producer.start();
@@ -75,7 +84,8 @@ async fn orders(listen: &str, count: u64) -> Result<(), BoxError> {
     for i in 1..=count {
         let id = format!("o{i}");
         let amount = i64::try_from(i)? * 1000;
-        let mut tx = store.begin().await?;
+        // The service's own pool; the append joins its transaction.
+        let mut tx = app.begin().await?;
         sqlx::query("INSERT INTO orders.orders (id, amount_cents) VALUES ($1, $2)")
             .bind(&id)
             .bind(amount)
@@ -92,7 +102,7 @@ async fn orders(listen: &str, count: u64) -> Result<(), BoxError> {
         )?
         .correlation(format!("req-{i}"));
         producer.append(&mut tx, event).await?;
-        store.commit(tx).await?;
+        tx.commit().await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     println!("orders: confirmed {count} orders");
@@ -126,13 +136,18 @@ impl Handler<PgStore> for CreateInvoice {
 
 /// The consumer: invoice confirmed orders until `until` invoices exist.
 async fn billing(orders_url: &str, until: i64) -> Result<(), BoxError> {
-    let pool = pool().await?;
-    let store = z_event_postgres::migrate(&pool, "billing").await?;
+    let app = pool(10).await?;
+    // The subscriber applies events through this pool: handler writes and
+    // cursor share its transactions.
+    let store = z_event_postgres::migrate(&pool(4).await?, "billing_zevent").await?;
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS billing")
+        .execute(&app)
+        .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS billing.invoices \
          (order_id text PRIMARY KEY, amount_cents bigint NOT NULL, event_id text NOT NULL)",
     )
-    .execute(&pool)
+    .execute(&app)
     .await?;
 
     // Wait for the orders service to come up.
@@ -150,7 +165,7 @@ async fn billing(orders_url: &str, until: i64) -> Result<(), BoxError> {
 
     loop {
         let invoices: i64 = sqlx::query_scalar("SELECT count(*) FROM billing.invoices")
-            .fetch_one(&pool)
+            .fetch_one(&app)
             .await?;
         if invoices >= until {
             println!("billing: {invoices} invoices");
