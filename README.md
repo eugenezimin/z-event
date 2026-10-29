@@ -4,7 +4,7 @@ z-event is a Rust library for reliable, push-based events between services, with
 
 A service writes its events into its own database, in the same transaction as the business change. Other services subscribe to that service's feed and receive each new event within milliseconds of the commit. Every consumer stores its position in the same transaction as the effect of the event, so crashes, restarts and network drops never lose an event and never apply one twice.
 
-The current version is 0.1.0 and has not been released yet. All crates listed below are implemented and tested.
+The current version is 0.1.0. All crates listed below are implemented and tested.
 
 ## How it works
 
