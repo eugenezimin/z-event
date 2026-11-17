@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-17
+
+### Changed
+
+- `z-event-postgres` moves to sqlx 0.9, the version z-auth 0.7 uses, so a host still shares one transaction type between both libraries. Hosts must move to sqlx 0.9 together with this release.
+- `Ulid`, which `z-event` re-exports, now comes from ulid 3, where `Ulid::new` is called `Ulid::generate`. Event ids and epochs keep their format.
+- The workspace asks for tokio 1.54 and fastrand 2.5 at least, and the lockfile is refreshed to the newest compatible releases.
+
+### Security
+
+- cargo-deny ignores RUSTSEC-2026-0440 (astral-tokio-tar is unmaintained), which reaches only the tests through testcontainers.
+
 ## [0.1.0] - 2026-10-29
 
 ### Added
@@ -28,5 +40,6 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - The z-event tables are recommended to live in a schema of their own inside the service's database, such as `orders_zevent` next to the business schema `orders`, with business transactions begun on the service's own pool. `examples/split`, the doc comments of `z-event-postgres` and `z-event-cli`, and the documentation follow this layout, and a PostgreSQL test covers it.
 
-[Unreleased]: https://github.com/eugenezimin/z-event/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/eugenezimin/z-event/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/eugenezimin/z-event/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/eugenezimin/z-event/releases/tag/v0.1.0

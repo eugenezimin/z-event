@@ -3682,7 +3682,7 @@ dependencies = [
 
 [[package]]
 name = "z-event"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "fastrand",
@@ -3700,7 +3700,7 @@ dependencies = [
 
 [[package]]
 name = "z-event-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "sqlx",
@@ -3714,7 +3714,7 @@ dependencies = [
 
 [[package]]
 name = "z-event-example-in-process"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3726,7 +3726,7 @@ dependencies = [
 
 [[package]]
 name = "z-event-example-split"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3741,7 +3741,7 @@ dependencies = [
 
 [[package]]
 name = "z-event-grpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fastrand",
  "futures",
@@ -3765,7 +3765,7 @@ dependencies = [
 
 [[package]]
 name = "z-event-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
@@ -3780,7 +3780,7 @@ dependencies = [
 
 [[package]]
 name = "z-event-postgres"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
@@ -3798,7 +3798,7 @@ dependencies = [
 
 [[package]]
 name = "z-event-testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fastrand",
  "futures",

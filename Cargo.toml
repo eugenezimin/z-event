@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT OR Apache-2.0"
@@ -21,11 +21,11 @@ keywords = ["outbox", "events", "event-driven", "transactional", "feed"]
 categories = ["asynchronous", "database"]
 
 [workspace.dependencies]
-z-event         = { path = "core", version = "0.1.0" }
-z-event-memory  = { path = "adapters/memory", version = "0.1.0" }
-z-event-postgres = { path = "adapters/postgres", version = "0.1.0" }
-z-event-grpc    = { path = "adapters/grpc", version = "0.1.0" }
-z-event-testkit = { path = "testkit", version = "0.1.0" }
+z-event         = { path = "core", version = "0.2.0" }
+z-event-memory  = { path = "adapters/memory", version = "0.2.0" }
+z-event-postgres = { path = "adapters/postgres", version = "0.2.0" }
+z-event-grpc    = { path = "adapters/grpc", version = "0.2.0" }
+z-event-testkit = { path = "testkit", version = "0.2.0" }
 
 tokio       = { version = "1.54", default-features = false }
 tokio-util  = { version = "0.7", default-features = false }
