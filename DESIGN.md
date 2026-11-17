@@ -97,7 +97,7 @@ The repository contains these crates.
 |---|---|---|
 | `z-event` | `core/` | Envelope, protocol, ports, `Producer`, `FeedSource`, `Subscriber`, the in-process transport, metrics and tracing |
 | `z-event-memory` | `adapters/memory/` | In-memory storage, the reference implementation used by tests and examples |
-| `z-event-postgres` | `adapters/postgres/` | PostgreSQL storage on sqlx 0.8 |
+| `z-event-postgres` | `adapters/postgres/` | PostgreSQL storage on sqlx 0.9 |
 | `z-event-grpc` | `adapters/grpc/` | gRPC transport on tonic 0.14 |
 | `z-event-cli` | `cli/` | Operations commands for inspecting and repairing feeds and consumers |
 | `z-event-testkit` | `testkit/` | Conformance suites that every storage and transport adapter must pass |
@@ -597,7 +597,7 @@ The caller's identity in-process is the consumer name, because both sides run in
 
 ## 15. Postgres adapter (`z-event-postgres`)
 
-`PgStore` implements all storage ports on PostgreSQL with sqlx 0.8, the same version as z-auth, so a host can share one transaction type between both libraries. `Store::Tx` is `sqlx::Transaction<'static, Postgres>`, and the host runs its own SQL on the same transaction.
+`PgStore` implements all storage ports on PostgreSQL with sqlx 0.9, the same version as z-auth, so a host can share one transaction type between both libraries. `Store::Tx` is `sqlx::Transaction<'static, Postgres>`, and the host runs its own SQL on the same transaction.
 
 Each service keeps its z-event tables in a schema of their own inside the service's database, for example `orders_zevent` next to the business schema `orders`. They have to be in the same database, because the outbox row commits in the business transaction and the cursor commits in the handler's transaction, and a transaction cannot span two databases. A separate schema keeps the fixed names `outbox`, `feed_meta`, `feed_consumers`, `feed_cursors`, `dead_letters` and their indexes away from the service's own objects and out of the way of migration tools that compare a schema with its expected state. Keeping them in the business schema also works when nothing collides. Statements are schema-qualified, so they do not depend on the connection's `search_path`. A schema name is a plain identifier of at most 40 characters, because it becomes part of the notification channel names.
 
