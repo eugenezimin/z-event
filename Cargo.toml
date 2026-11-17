@@ -27,7 +27,7 @@ z-event-postgres = { path = "adapters/postgres", version = "0.1.0" }
 z-event-grpc    = { path = "adapters/grpc", version = "0.1.0" }
 z-event-testkit = { path = "testkit", version = "0.1.0" }
 
-tokio       = { version = "1.47", default-features = false }
+tokio       = { version = "1.54", default-features = false }
 tokio-util  = { version = "0.7", default-features = false }
 futures     = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 serde       = { version = "1", features = ["derive"] }
@@ -39,7 +39,7 @@ metrics     = "0.24"
 metrics-util = { version = "0.20", default-features = false, features = ["registry"] }
 ulid        = { version = "3", features = ["serde"] }
 time        = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
-fastrand    = "2"
+fastrand    = "2.5"
 # sqlx 0.9 matches z-auth, so hosts can share one transaction type.
 sqlx        = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "time", "json"] }
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
