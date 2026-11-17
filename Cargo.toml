@@ -37,7 +37,7 @@ thiserror   = "2"
 tracing     = "0.1"
 metrics     = "0.24"
 metrics-util = { version = "0.20", default-features = false, features = ["registry"] }
-ulid        = { version = "1", features = ["serde"] }
+ulid        = { version = "3", features = ["serde"] }
 time        = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 fastrand    = "2"
 # sqlx 0.9 matches z-auth, so hosts can share one transaction type.

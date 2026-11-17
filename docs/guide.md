@@ -363,7 +363,7 @@ struct CreateInvoice {
 impl Handler<PgStore> for CreateInvoice {
     async fn handle(&self, tx: &mut sqlx::Transaction<'static, Postgres>, ev: &Event) -> Result<(), HandlerError> {
         let order: OrderConfirmed = ev.json().map_err(HandlerError::permanent)?;
-        let invoice_id = ulid::Ulid::new().to_string();
+        let invoice_id = ulid::Ulid::generate().to_string();
         sqlx::query("INSERT INTO billing.invoices (id, order_id, amount_cents) VALUES ($1, $2, $3)")
             .bind(&invoice_id)
             .bind(&order.order_id)

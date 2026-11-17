@@ -68,7 +68,7 @@ pub struct Epoch(String);
 impl Epoch {
     /// A fresh, unique epoch.
     pub fn generate() -> Self {
-        Epoch(ulid::Ulid::new().to_string())
+        Epoch(ulid::Ulid::generate().to_string())
     }
 
     /// Wraps an existing epoch value. Returns `None` for an empty string,
