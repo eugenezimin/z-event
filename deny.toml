@@ -6,6 +6,12 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # astral-tokio-tar is unmaintained and has no successor release. It only
+    # reaches the tests, through testcontainers, whose newest release (0.28)
+    # still depends on it.
+    { id = "RUSTSEC-2026-0440", reason = "dev-only, via testcontainers; no maintained release yet" },
+]
 
 [licenses]
 version = 2
