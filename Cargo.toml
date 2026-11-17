@@ -40,8 +40,8 @@ metrics-util = { version = "0.20", default-features = false, features = ["regist
 ulid        = { version = "1", features = ["serde"] }
 time        = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 fastrand    = "2"
-# sqlx 0.8 matches z-auth, so hosts can share one transaction type.
-sqlx        = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "time", "json"] }
+# sqlx 0.9 matches z-auth, so hosts can share one transaction type.
+sqlx        = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "time", "json"] }
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tonic       = { version = "0.14", default-features = false }
 tonic-prost = "0.14"

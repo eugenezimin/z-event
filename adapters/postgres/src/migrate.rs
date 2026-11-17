@@ -1,6 +1,6 @@
 //! Embedded, versioned migrations with their own history table.
 
-use sqlx::Executor;
+use sqlx::{AssertSqlSafe, Executor};
 use z_event::Epoch;
 
 use crate::{Inner, PgError};
@@ -96,8 +96,10 @@ pub(crate) async fn run(inner: &Inner) -> Result<(), PgError> {
         .bind(inner.lock_key ^ 0x5a5a_5a5a)
         .execute(&mut *tx)
         .await?;
-    (&mut *tx).execute(bootstrap.as_str()).await?;
-    let applied: Option<i32> = sqlx::query_scalar(&current).fetch_one(&mut *tx).await?;
+    (&mut *tx).execute(AssertSqlSafe(bootstrap)).await?;
+    let applied: Option<i32> = sqlx::query_scalar(AssertSqlSafe(current))
+        .fetch_one(&mut *tx)
+        .await?;
     for (version, body) in MIGRATIONS {
         if applied.is_some_and(|a| a >= *version) {
             continue;
@@ -105,14 +107,14 @@ pub(crate) async fn run(inner: &Inner) -> Result<(), PgError> {
         let body = body
             .replace("{s}", s)
             .replace("{appended}", &inner.appended_channel);
-        (&mut *tx).execute(body.as_str()).await?;
-        sqlx::query(&record)
+        (&mut *tx).execute(AssertSqlSafe(body)).await?;
+        sqlx::query(AssertSqlSafe(record.as_str()))
             .bind(*version)
             .execute(&mut *tx)
             .await?;
         if *version == 1 {
             let epoch = Epoch::generate();
-            sqlx::query(&seed_meta)
+            sqlx::query(AssertSqlSafe(seed_meta.as_str()))
                 .bind(epoch.as_str())
                 .execute(&mut *tx)
                 .await?;
