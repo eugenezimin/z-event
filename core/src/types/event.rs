@@ -105,7 +105,7 @@ impl NewEvent {
         payload: impl Into<Bytes>,
     ) -> Self {
         NewEvent {
-            id: Ulid::new(),
+            id: Ulid::generate(),
             event_type: event_type.into(),
             version: 1,
             aggregate: aggregate.into(),
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn builder_and_into_event() {
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let ev = NewEvent::json("A", "x/1", 2, &serde_json::json!({"k": 1}))
             .unwrap()
             .id(id)

@@ -56,7 +56,7 @@ impl OutboxStore for PgStore {
 
     async fn append(&self, tx: &mut Self::Tx, events: &[NewEvent]) -> Result<(), PgError> {
         for ev in events {
-            sqlx::query(&self.inner.sql.append)
+            sqlx::query(self.inner.sql.append.clone())
                 .bind(ev.event_id().to_string())
                 .bind(ev.event_type())
                 .bind(
@@ -107,7 +107,7 @@ impl OutboxStore for PgStore {
         // is the lock, and this fails (fencing). Session locks need no renewal.
         let mut conn = lease.conn.lock().await;
         let mut tx = conn.begin().await?;
-        let stamped: Vec<i64> = sqlx::query_scalar(&self.inner.sql.stamp)
+        let stamped: Vec<i64> = sqlx::query_scalar(self.inner.sql.stamp.clone())
             .bind(i64::from(limit))
             .fetch_all(&mut *tx)
             .await?;
@@ -115,7 +115,7 @@ impl OutboxStore for PgStore {
             tx.commit().await?;
             return Ok(None);
         };
-        sqlx::query(&self.inner.sql.set_head)
+        sqlx::query(self.inner.sql.set_head.clone())
             .bind(head)
             .execute(&mut *tx)
             .await?;
@@ -138,7 +138,7 @@ impl OutboxStore for PgStore {
             TypeFilter::All => None,
             TypeFilter::Only(set) => Some(set.iter().cloned().collect()),
         };
-        let rows = sqlx::query(&self.inner.sql.read)
+        let rows = sqlx::query(self.inner.sql.read.clone())
             .bind(to_i64(after.get(), "seq")?)
             .bind(types)
             .bind(i64::from(limit))
@@ -148,7 +148,7 @@ impl OutboxStore for PgStore {
     }
 
     async fn head(&self) -> Result<FeedHead, PgError> {
-        let row = sqlx::query(&self.inner.sql.head)
+        let row = sqlx::query(self.inner.sql.head.clone())
             .fetch_one(&self.inner.pool)
             .await?;
         let epoch: String = row.try_get("epoch")?;
@@ -161,7 +161,7 @@ impl OutboxStore for PgStore {
 
     async fn rotate_epoch(&self) -> Result<Epoch, PgError> {
         let epoch = Epoch::generate();
-        sqlx::query(&self.inner.sql.rotate_epoch)
+        sqlx::query(self.inner.sql.rotate_epoch.clone())
             .bind(epoch.as_str())
             .execute(&self.inner.pool)
             .await?;
@@ -173,14 +173,14 @@ impl OutboxStore for PgStore {
     }
 
     async fn unsequenced(&self) -> Result<u64, PgError> {
-        let n: i64 = sqlx::query_scalar(&self.inner.sql.unsequenced)
+        let n: i64 = sqlx::query_scalar(self.inner.sql.unsequenced.clone())
             .fetch_one(&self.inner.pool)
             .await?;
         to_u64(n, "count")
     }
 
     async fn register_consumer(&self, consumer: &str, at: Seq) -> Result<(), PgError> {
-        sqlx::query(&self.inner.sql.register_consumer)
+        sqlx::query(self.inner.sql.register_consumer.clone())
             .bind(consumer)
             .bind(to_i64(at.get(), "seq")?)
             .execute(&self.inner.pool)
@@ -189,7 +189,7 @@ impl OutboxStore for PgStore {
     }
 
     async fn ack(&self, consumer: &str, seq: Seq) -> Result<(), PgError> {
-        sqlx::query(&self.inner.sql.ack)
+        sqlx::query(self.inner.sql.ack.clone())
             .bind(consumer)
             .bind(to_i64(seq.get(), "seq")?)
             .execute(&self.inner.pool)
@@ -198,7 +198,7 @@ impl OutboxStore for PgStore {
     }
 
     async fn consumers(&self) -> Result<Vec<ConsumerState>, PgError> {
-        let rows = sqlx::query(&self.inner.sql.consumers)
+        let rows = sqlx::query(self.inner.sql.consumers.clone())
             .fetch_all(&self.inner.pool)
             .await?;
         rows.iter()
@@ -213,7 +213,7 @@ impl OutboxStore for PgStore {
     }
 
     async fn remove_consumer(&self, consumer: &str) -> Result<(), PgError> {
-        sqlx::query(&self.inner.sql.remove_consumer)
+        sqlx::query(self.inner.sql.remove_consumer.clone())
             .bind(consumer)
             .execute(&self.inner.pool)
             .await?;
@@ -223,20 +223,20 @@ impl OutboxStore for PgStore {
     async fn purge(&self, before: OffsetDateTime) -> Result<u64, PgError> {
         let mut tx = self.inner.pool.begin().await?;
         let (boundary, purged_through): (Option<i64>, i64) =
-            sqlx::query_as(&self.inner.sql.purge_boundary)
+            sqlx::query_as(self.inner.sql.purge_boundary.clone())
                 .bind(before)
                 .fetch_one(&mut *tx)
                 .await?;
         let Some(boundary) = boundary.filter(|b| *b > purged_through) else {
             return Ok(0);
         };
-        let deleted = sqlx::query(&self.inner.sql.purge_delete)
+        let deleted = sqlx::query(self.inner.sql.purge_delete.clone())
             .bind(boundary)
             .execute(&mut *tx)
             .await?
             .rows_affected();
         if deleted > 0 {
-            sqlx::query(&self.inner.sql.purge_meta)
+            sqlx::query(self.inner.sql.purge_meta.clone())
                 .bind(boundary)
                 .execute(&mut *tx)
                 .await?;

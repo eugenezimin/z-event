@@ -33,7 +33,7 @@ async fn orders_and_billing_as_two_processes() {
                 .await
                 .unwrap();
             for db in ["orders", "billing"] {
-                sqlx::query(&format!("CREATE DATABASE {db}"))
+                sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {db}")))
                     .execute(&admin)
                     .await
                     .unwrap();

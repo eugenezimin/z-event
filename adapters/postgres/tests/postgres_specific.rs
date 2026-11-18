@@ -92,10 +92,10 @@ async fn migrate_is_idempotent_and_safe_to_run_concurrently() {
         "re-migrating keeps the feed"
     );
 
-    let applied: Vec<i32> = sqlx::query_scalar(&format!(
+    let applied: Vec<i32> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT version FROM {}.zevent_migrations ORDER BY version",
         store.schema()
-    ))
+    )))
     .fetch_all(store.pool())
     .await
     .unwrap();
@@ -119,9 +119,9 @@ async fn host_writes_and_events_share_the_transaction() {
     let db = support::db("16-alpine").await;
     let store = db.store().await;
     let table = format!("{}.orders", store.schema());
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TABLE {table} (id text PRIMARY KEY, status text NOT NULL)"
-    ))
+    )))
     .execute(store.pool())
     .await
     .unwrap();
@@ -129,7 +129,7 @@ async fn host_writes_and_events_share_the_transaction() {
 
     // Rolled back: neither the order nor the event exists.
     let mut tx = store.begin().await.unwrap();
-    sqlx::query(&insert)
+    sqlx::query(sqlx::AssertSqlSafe(insert.as_str()))
         .bind("o1")
         .execute(&mut *tx)
         .await
@@ -143,7 +143,7 @@ async fn host_writes_and_events_share_the_transaction() {
         .unwrap();
     store.rollback(tx).await.unwrap();
     let count = format!("SELECT count(*) FROM {table}");
-    let orders: i64 = sqlx::query_scalar(&count)
+    let orders: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(count.as_str()))
         .fetch_one(store.pool())
         .await
         .unwrap();
@@ -151,7 +151,7 @@ async fn host_writes_and_events_share_the_transaction() {
 
     // Committed: both exist.
     let mut tx = store.begin().await.unwrap();
-    sqlx::query(&insert)
+    sqlx::query(sqlx::AssertSqlSafe(insert.as_str()))
         .bind("o2")
         .execute(&mut *tx)
         .await
@@ -164,7 +164,7 @@ async fn host_writes_and_events_share_the_transaction() {
         .await
         .unwrap();
     store.commit(tx).await.unwrap();
-    let orders: i64 = sqlx::query_scalar(&count)
+    let orders: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(count.as_str()))
         .fetch_one(store.pool())
         .await
         .unwrap();
@@ -183,14 +183,14 @@ async fn host_pool_and_business_schema_carry_the_event() {
         .await
         .unwrap();
     let business = format!("{}_app", store.schema());
-    sqlx::query(&format!("CREATE SCHEMA {business}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {business}")))
         .execute(&app)
         .await
         .unwrap();
     let table = format!("{business}.orders");
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TABLE {table} (id text PRIMARY KEY, status text NOT NULL)"
-    ))
+    )))
     .execute(&app)
     .await
     .unwrap();
@@ -200,7 +200,7 @@ async fn host_pool_and_business_schema_carry_the_event() {
 
     // Rolled back on the host's pool: neither the order nor the event exists.
     let mut tx = app.begin().await.unwrap();
-    sqlx::query(&insert)
+    sqlx::query(sqlx::AssertSqlSafe(insert.as_str()))
         .bind("o1")
         .execute(&mut *tx)
         .await
@@ -216,7 +216,7 @@ async fn host_pool_and_business_schema_carry_the_event() {
 
     // Committed on the host's pool: the sequencer is woken and stamps it.
     let mut tx = app.begin().await.unwrap();
-    sqlx::query(&insert)
+    sqlx::query(sqlx::AssertSqlSafe(insert.as_str()))
         .bind("o2")
         .execute(&mut *tx)
         .await
@@ -231,10 +231,11 @@ async fn host_pool_and_business_schema_carry_the_event() {
     tx.commit().await.unwrap();
     wait_head(&store, 1).await;
 
-    let orders: Vec<String> = sqlx::query_scalar(&format!("SELECT id FROM {table}"))
-        .fetch_all(&app)
-        .await
-        .unwrap();
+    let orders: Vec<String> =
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT id FROM {table}")))
+            .fetch_all(&app)
+            .await
+            .unwrap();
     let events = store.read(Seq::ZERO, &TypeFilter::All, 10).await.unwrap();
     assert_eq!(orders, ["o2"]);
     assert_eq!(events.len(), 1);

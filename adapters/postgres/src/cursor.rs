@@ -15,21 +15,22 @@ fn cursor_from(seq: i64, epoch: Option<String>) -> Result<Cursor, PgError> {
 
 impl CursorStore for PgStore {
     async fn lock_cursor(&self, tx: &mut Self::Tx, key: &CursorKey) -> Result<Cursor, PgError> {
-        sqlx::query(&self.inner.sql.cursor_insert)
+        sqlx::query(self.inner.sql.cursor_insert.clone())
             .bind(&key.consumer)
             .bind(&key.producer)
             .execute(&mut **tx)
             .await?;
-        let (seq, epoch): (i64, Option<String>) = sqlx::query_as(&self.inner.sql.cursor_lock)
-            .bind(&key.consumer)
-            .bind(&key.producer)
-            .fetch_one(&mut **tx)
-            .await?;
+        let (seq, epoch): (i64, Option<String>) =
+            sqlx::query_as(self.inner.sql.cursor_lock.clone())
+                .bind(&key.consumer)
+                .bind(&key.producer)
+                .fetch_one(&mut **tx)
+                .await?;
         cursor_from(seq, epoch)
     }
 
     async fn advance(&self, tx: &mut Self::Tx, key: &CursorKey, to: Cursor) -> Result<(), PgError> {
-        sqlx::query(&self.inner.sql.cursor_advance)
+        sqlx::query(self.inner.sql.cursor_advance.clone())
             .bind(&key.consumer)
             .bind(&key.producer)
             .bind(to_i64(to.seq.get(), "seq")?)
@@ -40,7 +41,7 @@ impl CursorStore for PgStore {
     }
 
     async fn cursor(&self, key: &CursorKey) -> Result<Cursor, PgError> {
-        let row: Option<(i64, Option<String>)> = sqlx::query_as(&self.inner.sql.cursor_read)
+        let row: Option<(i64, Option<String>)> = sqlx::query_as(self.inner.sql.cursor_read.clone())
             .bind(&key.consumer)
             .bind(&key.producer)
             .fetch_optional(&self.inner.pool)
@@ -52,7 +53,7 @@ impl CursorStore for PgStore {
     }
 
     async fn reset_cursor(&self, key: &CursorKey, to: Cursor) -> Result<(), PgError> {
-        sqlx::query(&self.inner.sql.cursor_reset)
+        sqlx::query(self.inner.sql.cursor_reset.clone())
             .bind(&key.consumer)
             .bind(&key.producer)
             .bind(to_i64(to.seq.get(), "seq")?)
@@ -63,7 +64,7 @@ impl CursorStore for PgStore {
     }
 
     async fn park(&self, tx: &mut Self::Tx, letter: &DeadLetter) -> Result<(), PgError> {
-        sqlx::query(&self.inner.sql.park)
+        sqlx::query(self.inner.sql.park.clone())
             .bind(&letter.key.consumer)
             .bind(&letter.key.producer)
             .bind(to_i64(letter.seq().get(), "seq")?)
@@ -84,7 +85,7 @@ impl CursorStore for PgStore {
         key: &CursorKey,
         aggregate: &str,
     ) -> Result<bool, PgError> {
-        Ok(sqlx::query_scalar(&self.inner.sql.is_parked)
+        Ok(sqlx::query_scalar(self.inner.sql.is_parked.clone())
             .bind(&key.consumer)
             .bind(&key.producer)
             .bind(aggregate)
@@ -97,7 +98,7 @@ impl CursorStore for PgStore {
         key: &CursorKey,
         filter: &ParkedFilter,
     ) -> Result<Vec<DeadLetter>, PgError> {
-        let rows = sqlx::query(&self.inner.sql.parked)
+        let rows = sqlx::query(self.inner.sql.parked.clone())
             .bind(&key.consumer)
             .bind(&key.producer)
             .bind(filter.aggregate.as_deref())
@@ -130,7 +131,7 @@ impl CursorStore for PgStore {
     }
 
     async fn resolve(&self, tx: &mut Self::Tx, key: &CursorKey, seq: Seq) -> Result<(), PgError> {
-        sqlx::query(&self.inner.sql.resolve)
+        sqlx::query(self.inner.sql.resolve.clone())
             .bind(&key.consumer)
             .bind(&key.producer)
             .bind(to_i64(seq.get(), "seq")?)
